@@ -1,0 +1,40 @@
+id: academic_norm_check
+name: 学术规范检查
+description: 检查引用、参考文献、来源可靠性和学术表达边界。
+mode_aliases:
+  - 学术规范
+  - 引用检查
+trigger_keywords:
+  - 学术规范
+  - 引用
+  - 参考文献格式
+  - DOI
+  - 来源可靠
+  - 文献真假
+  - 观点是不是原文
+  - 抄袭
+  - 查重
+required_slots: []
+slot_questions:
+corpus_paths:
+  - corpus/rubrics/*.md
+  - corpus/course/*.md
+  - 语料/1. 课程相关/**/*.md
+answer_policy:
+  must:
+    - 明确区分已核验来源和待核验线索。
+    - 不确认没有原文证据的观点归属。
+    - 对引用格式做低风险检查，提醒核对课程要求。
+  must_not:
+    - 不编造作者、题名、DOI 或页码。
+    - 不承诺查重结果。
+output_template: |
+  【规范风险】
+  ...
+
+  【需要核验】
+  ...
+
+  【可以先这样处理】
+  ...
+stay_in_mode: true

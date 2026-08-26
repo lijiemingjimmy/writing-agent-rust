@@ -1,0 +1,47 @@
+id: ai_use_boundary_qa
+name: AI 使用边界问答
+description: 回答 AI 使用、AI 率、学术诚信、对话记录和隐私边界问题。
+mode_aliases:
+  - AI边界
+  - AI使用
+trigger_keywords:
+  - AI率
+  - AI 率
+  - AI使用
+  - 用AI
+  - 用 AI
+  - ChatGPT
+  - 生成式AI
+  - 生成式 AI
+  - 学术诚信
+  - 检测
+  - 降低AI痕迹
+  - 隐私
+  - 记录对话
+required_slots: []
+slot_questions:
+corpus_paths:
+  - corpus/rubrics/*.md
+  - corpus/course/*.md
+  - 语料/1. 课程相关/**/*.md
+answer_policy:
+  must:
+    - 直接说明安全边界：AI 可用于讨论、诊断、检索规划和修改任务，不应用于代写提交。
+    - 对 AI 率和检测不做保证。
+    - 明确提醒系统会记录对话、阶段和过程摘要供教师端查看。
+  must_not:
+    - 不提供规避检测策略。
+    - 不承诺某种 AI 率一定安全。
+output_template: |
+  【可以做】
+  ...
+
+  【不要做】
+  ...
+
+  【记录与隐私】
+  ...
+
+  【需教师确认】
+  ...
+stay_in_mode: true

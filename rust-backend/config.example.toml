@@ -1,0 +1,22 @@
+bind_addr = "127.0.0.1:3000"
+database_url = "sqlite://rust_course_demo.db"
+skill_root = "skills"
+corpus_root = "corpus"
+# Set this to the exact Web origin when the student UI is hosted cross-origin.
+cors_allowed_origins = []
+
+[model]
+provider = "openai-compatible"
+endpoint = "http://127.0.0.1:1234/v1"
+name = "local-writing-model"
+api_key_env = "WRITING_COACH_MODEL_API_KEY"
+context_length = 32768
+max_output_tokens = 4096
+reasoning_mode = "medium"
+input_price_microusd_per_million = 500000
+output_price_microusd_per_million = 1500000
+
+[run_defaults]
+max_input_tokens = 24000
+max_output_tokens = 4096
+max_cost_microusd = 5000000

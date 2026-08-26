@@ -1,0 +1,45 @@
+id: draft_diagnosis
+name: 初稿诊断
+description: 对初稿或段落做问题定位、论证诊断和修改任务生成，不全文重写。
+mode_aliases:
+  - 初稿诊断
+  - 诊断初稿
+trigger_keywords:
+  - 初稿
+  - 修改稿
+  - 草稿
+  - 段落
+  - 论证
+  - 结构
+  - 证据
+  - 反方
+  - 哪里有问题
+  - 怎么改
+required_slots: []
+slot_questions:
+corpus_paths:
+  - corpus/rubrics/*.md
+  - corpus/course/*.md
+  - corpus/examples/*.md
+  - 语料/1. 课程相关/**/*.md
+answer_policy:
+  must:
+    - 输出问题清单，不直接全文重写。
+    - 每个问题要包含位置、问题类型、原因和修改任务。
+    - 如果用户没有贴原文，只能给诊断框架并要求补文本。
+  must_not:
+    - 不替学生重写全文。
+    - 不编造用户原文中不存在的句子。
+output_template: |
+  【初稿诊断】
+  ...
+
+  问题 1：
+  - 位置：
+  - 类型：
+  - 为什么影响读者：
+  - 修改任务：
+
+  【下一步】
+  ...
+stay_in_mode: true

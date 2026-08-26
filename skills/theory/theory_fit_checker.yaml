@@ -1,0 +1,41 @@
+id: theory_fit_checker
+name: 理论适配检查
+description: 检查理论是否真的解释材料，防止堆理论和硬套理论。
+mode_aliases:
+  - 理论检查
+  - 理论适配
+trigger_keywords:
+  - 理论
+  - 理论框架
+  - 理论入口
+  - 概念框架
+  - 硬套
+  - 堆理论
+required_slots: []
+slot_questions:
+corpus_paths:
+  - 语料/1. 课程相关/范式理论效应整理7.0-2025秋.md
+  - 语料/1. 课程相关/**/*.md
+  - 语料/26博弈课件-markdown/*.md
+  - 语料/26教育课件-markdown/*.md
+answer_policy:
+  must:
+    - 先问理论要解释什么现象或机制。
+    - 每个理论必须对应明确解释任务。
+    - 必须说明理论能解释什么、不能解释什么、需要什么证据。
+  must_not:
+    - 不鼓励理论越多越好。
+    - 不把理论候选说成最终结论。
+output_template: |
+  【理论适配判断】
+  ...
+
+  【能解释什么】
+  ...
+
+  【不能解释什么】
+  ...
+
+  【需要补的证据】
+  ...
+stay_in_mode: true

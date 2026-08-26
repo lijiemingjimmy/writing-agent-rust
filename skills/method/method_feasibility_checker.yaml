@@ -1,0 +1,44 @@
+id: method_feasibility_checker
+name: 方法可行性检查
+description: 检查问卷、访谈、样本、变量和因果表述是否适合作业规模。
+mode_aliases:
+  - 方法检查
+  - 问卷访谈
+trigger_keywords:
+  - 问卷
+  - 访谈
+  - 样本
+  - 变量
+  - 题项
+  - 反向因果
+  - 因果
+  - 研究方法
+  - 方法可行
+required_slots: []
+slot_questions:
+corpus_paths:
+  - corpus/rubrics/*.md
+  - corpus/course/*.md
+  - 语料/1. 课程相关/**/*.md
+  - corpus/examples/*.md
+answer_policy:
+  must:
+    - 按课程作业规模判断方法是否过重。
+    - 区分相关、解释、机制推测和因果结论。
+    - 输出方法计划、样本建议、风险提醒和下一步小任务。
+  must_not:
+    - 不把课程论文包装成大型实证研究。
+    - 不生成可直接提交的方法章节。
+output_template: |
+  【方法是否可行】
+  ...
+
+  【主要风险】
+  ...
+
+  【轻量方法计划】
+  ...
+
+  【下一步任务】
+  ...
+stay_in_mode: true

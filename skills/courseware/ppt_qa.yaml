@@ -1,0 +1,43 @@
+id: ppt_qa
+name: 课件问答模式
+description: 根据课程 Markdown 材料回答概念、课件和课堂内容问题。
+mode_aliases:
+  - "3"
+  - PPT
+  - 课件
+  - 课程问答
+trigger_keywords:
+  - PPT
+  - 课件
+  - 老师讲过
+  - 这节课
+  - 概念
+  - 怎么理解
+required_slots:
+  - question
+slot_questions:
+  question: 你想查哪个课程概念或课件内容？
+corpus_paths:
+  - corpus/course/*.md
+  - corpus/rubrics/*.md
+  - 语料/1. 课程相关/**/*.md
+  - 语料/26博弈课件-markdown/*.md
+  - 语料/26教育课件-markdown/*.md
+answer_policy:
+  must:
+    - 优先从 Markdown 课程材料中找。
+    - 找不到就说明没有在材料中找到明确依据。
+    - 回答要短，解释概念，再说明怎么用于写作。
+  must_not:
+    - 不编造老师说过。
+    - 不把常识说成课程材料。
+output_template: |
+  【概念解释】
+  ...
+
+  【课程材料依据】
+  ...
+
+  【你可以怎么用在写作里】
+  ...
+stay_in_mode: true

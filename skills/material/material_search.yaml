@@ -1,0 +1,53 @@
+id: material_search
+name: 资料与文献检索
+description: 面向课程语料和公开学术库的资料检索；用于找资料、搜文献、OpenAlex、联网搜索和年份限定文献。
+mode_aliases:
+  - /search
+  - 联网搜索
+  - 找资料
+  - 搜文献
+trigger_keywords:
+  - 文献
+  - 参考文献
+  - 资料
+  - 材料
+  - 上网
+  - 联网
+  - 搜索
+  - 搜一下
+  - 找资料
+  - 找一些
+  - 找一下
+  - 找找
+  - 查一下
+  - 检索
+  - openalex
+  - open alex
+  - literature
+  - citation
+required_slots: []
+slot_questions:
+corpus_paths:
+  - corpus/rubrics/*.md
+  - corpus/course/*.md
+  - 语料/1. 课程相关/范式理论效应整理7.0-2025秋.md
+  - 语料/1. 课程相关/教案/*.md
+  - 语料/1. 课程相关/课程概况/*.md
+  - 语料/26博弈课件-markdown/*.md
+  - 语料/26教育课件-markdown/*.md
+  - corpus/examples/*.md
+answer_policy:
+  must:
+    - 输出课程材料、联网文献、怎么用、下一步筛选任务四段。
+    - 有年份限定时必须严格执行，不把旧文献混入严格年份结果。
+    - 联网未开启或失败时必须明说，不编造题名、作者、DOI 或链接。
+    - 课程语料要转写成学生可读提示，不裸露内部片段编号作为正文。
+  must_not:
+    - 不把资料检索请求改成选题追问。
+    - 不把本地课程语料说成联网结果。
+output_template: |
+  【课程材料】
+  【联网文献】
+  【怎么用】
+  【下一步筛选任务】
+stay_in_mode: false

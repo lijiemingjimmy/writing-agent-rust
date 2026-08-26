@@ -1,0 +1,16 @@
+.DS_Store
+.env
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-journal
+*.sqlite-shm
+*.sqlite-wal
+rust-backend/config.toml
+rust-backend/target/
+web/node_modules/
+web/dist/
+web/dist-teacher/
+writing-coach-session-*.json

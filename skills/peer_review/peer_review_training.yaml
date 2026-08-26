@@ -1,0 +1,43 @@
+id: peer_review_training
+name: 互评训练模式
+description: 帮助学生写出更具体、有证据、可执行的同伴反馈。
+mode_aliases:
+  - "4"
+  - 互评
+  - peer review
+trigger_keywords:
+  - 互评
+  - peer review
+  - 评价同学
+  - 同伴反馈
+required_slots:
+  - target_text
+  - review_goal
+slot_questions:
+  target_text: 请贴出你要互评的同学文本或关键片段。
+  review_goal: 你想训练哪类互评？比如观点、证据、逻辑或表达。
+corpus_paths:
+  - corpus/rubrics/peer_review_rubric.md
+  - corpus/examples/*.md
+  - 语料/1. 课程相关/**/*.md
+  - 语料/26博弈课件-markdown/*.md
+  - 语料/26教育课件-markdown/*.md
+answer_policy:
+  must:
+    - 训练学生给出具体、可证据化的反馈。
+    - 要求指出具体位置、具体问题、为什么影响理解、修改方向。
+  must_not:
+    - 不直接替学生写完整互评。
+output_template: |
+  【你现在的互评目标】
+  ...
+
+  【可以观察的维度】
+  1. 观点
+  2. 证据
+  3. 逻辑
+  4. 表达
+
+  【请你先回答】
+  ...
+stay_in_mode: true

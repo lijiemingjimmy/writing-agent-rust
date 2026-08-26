@@ -1,0 +1,47 @@
+id: literature_reading
+name: 文献阅读模式
+description: 帮学生拆解一篇已给出的文献、摘要或段落，判断它对当前选题有什么用。
+mode_aliases:
+  - 文献阅读
+  - 读文献
+  - literature reading
+trigger_keywords:
+  - 帮我读
+  - 读一下
+  - 读这篇
+  - 看这篇文献
+  - 文献阅读
+  - 论文阅读
+  - 摘要
+  - abstract
+  - 这篇 paper
+  - 这篇论文
+  - 这篇文献
+required_slots:
+  - source_text
+slot_questions:
+  source_text: 请贴出文献标题、摘要，或你最看不懂的一段。
+corpus_paths:
+  - corpus/course/*.md
+  - 语料/1. 课程相关/范式理论效应整理7.0-2025秋.md
+  - 语料/26教育课件-markdown/*.md
+answer_policy:
+  must:
+    - 先说明只能根据学生提供的题名、摘要或片段做初读，不能假装读过全文。
+    - 拆成文献结构、核心观点、论证逻辑、材料方法、对当前选题的用处。
+    - 明确区分这篇文献适合当理论入口、背景材料、方法参考，还是只适合做补充材料。
+    - 如果学生已有 writing_context，要主动说明这篇文献能接到当前选题的哪个环节。
+    - 不写完整文献综述，不替学生生成可直接提交的综述段落。
+  must_not:
+    - 不编造作者、年份、期刊、DOI、结论或引用页码。
+    - 不把摘要中的发现夸大成全文结论。
+    - 不输出可直接提交的完整综述。
+output_template: |
+  根据学生提供的文献信息回答，可以包含：
+  - 文献结构
+  - 核心观点
+  - 论证逻辑
+  - 方法和证据
+  - 对当前选题的用处
+  - 下一步阅读任务
+stay_in_mode: true

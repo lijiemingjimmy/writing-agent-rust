@@ -1,0 +1,42 @@
+id: research_question_evaluator
+name: 研究问题评价
+description: 判断研究问题是否清楚、可研究、可证据化，并给下一步收窄任务。
+mode_aliases:
+  - 研究问题
+  - 评价研究问题
+trigger_keywords:
+  - 研究问题
+  - 问题意识
+  - 这个问题好不好
+  - 这个题好不好
+  - 能不能研究
+  - 可不可行
+  - 怎么改问题
+required_slots: []
+slot_questions:
+corpus_paths:
+  - corpus/rubrics/*.md
+  - corpus/course/*.md
+  - 语料/1. 课程相关/**/*.md
+  - corpus/examples/*.md
+answer_policy:
+  must:
+    - 评价研究问题时必须看对象、机制、材料、边界和反方空间。
+    - 如果缺主题或材料来源，先追问，不直接定稿。
+    - 输出只能是诊断、风险、修改任务和临时研究问题草案。
+  must_not:
+    - 不替学生写完整论文论点。
+    - 不把宽泛主题包装成成熟研究问题。
+output_template: |
+  【当前判断】
+  ...
+
+  【缺口】
+  ...
+
+  【临时研究问题草案】
+  ...
+
+  【下一步任务】
+  ...
+stay_in_mode: true

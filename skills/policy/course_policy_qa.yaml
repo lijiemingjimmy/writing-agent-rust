@@ -1,0 +1,39 @@
+id: course_policy_qa
+name: 课程规则问答
+description: 回答课程规则、作业要求、字数、引用和需教师确认的问题。
+mode_aliases:
+  - 课程规则
+  - 作业要求
+trigger_keywords:
+  - 课程规则
+  - 作业要求
+  - 字数
+  - 截止
+  - 引用格式
+  - 格式要求
+  - 评分标准
+  - 能不能
+required_slots: []
+slot_questions:
+corpus_paths:
+  - corpus/rubrics/*.md
+  - corpus/course/*.md
+  - 语料/1. 课程相关/**/*.md
+answer_policy:
+  must:
+    - 规则类问题可以直接回答。
+    - 如果课程材料没有明确依据，必须标记为需教师确认。
+    - 区分课程规则、一般写作建议和系统推断。
+  must_not:
+    - 不编造课程政策。
+    - 不承诺分数或检测结果。
+output_template: |
+  【可以确定的规则】
+  ...
+
+  【需教师确认】
+  ...
+
+  【建议你现在做】
+  ...
+stay_in_mode: true
