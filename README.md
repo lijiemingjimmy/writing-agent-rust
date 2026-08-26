@@ -60,3 +60,5 @@ bash scripts/verify-course.sh
 该脚本执行仓库隔离检查、Rust fmt/Clippy/tests、Web tests 和生产构建。测试使用临时数据库和本地 Fake/mock，不需要真实用户数据或真实模型调用。
 
 详细 HTTP/SSE 协议见 [`rust-backend/README.md`](rust-backend/README.md)，依赖与复用说明见 [`THIRD_PARTY.md`](THIRD_PARTY.md)。
+
+用于生成课程设计 PDF 的完整事实素材、设计逻辑、功能清单、演示方案与交付检查表见 [`submission/GPT_PRO_PDF_BRIEF.md`](submission/GPT_PRO_PDF_BRIEF.md)。其中作者身份、清华 Git、真实 AI Token/费用和最终截图必须由作者按真实记录补充。
