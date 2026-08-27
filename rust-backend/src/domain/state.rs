@@ -236,6 +236,14 @@ pub struct WritingContext {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_scene: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confusion_point: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suspected_mechanism: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_mechanism: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub core_claim: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_path_id: Option<String>,
@@ -391,10 +399,6 @@ impl WritingContext {
                 if changed {
                     self.extra
                         .insert("thinking_task".to_owned(), Value::String("选题".to_owned()));
-                    self.extra.insert(
-                        "context_summary".to_owned(),
-                        Value::String(format!("主题：{topic}")),
-                    );
                 }
             }
         }
@@ -406,9 +410,18 @@ impl WritingContext {
             self.motivation = Some(motivation);
             update.motivation_captured = true;
         }
-        if contains_any(text, SCENE_MARKERS) {
-            self.observed_scene = Some(clean_scene(text));
+        if let Some(scene) = extract_observed_scene(text) {
+            self.observed_scene = Some(scene);
             update.scene_captured = true;
+        }
+        if let Some(confusion) = extract_confusion_point(text) {
+            self.confusion_point = Some(confusion);
+        }
+        if let Some(mechanism) = extract_suspected_mechanism(text) {
+            self.suspected_mechanism = Some(mechanism);
+        }
+        if let Some(mechanism) = extract_selected_mechanism(text) {
+            self.selected_mechanism = Some(mechanism);
         }
         if let Some(claim) = extract_after_markers(text, CLAIM_MARKERS, 4) {
             self.core_claim = Some(claim);
@@ -440,6 +453,8 @@ impl WritingContext {
             append_unique(&mut self.counterarguments, item, 6);
         }
 
+        self.context_summary = self.build_context_summary();
+
         update
     }
 
@@ -448,6 +463,10 @@ impl WritingContext {
         self.research_question = None;
         self.motivation = None;
         self.observed_scene = None;
+        self.confusion_point = None;
+        self.suspected_mechanism = None;
+        self.selected_mechanism = None;
+        self.context_summary = None;
         self.core_claim = None;
         self.selected_path_id = None;
         self.selected_path = None;
@@ -464,9 +483,6 @@ impl WritingContext {
         for key in [
             "theory_entry",
             "material_gap",
-            "confusion_point",
-            "suspected_mechanism",
-            "selected_mechanism",
             "rejected_paths",
             "rejected_path_reason",
             "reflection_notes",
@@ -475,7 +491,6 @@ impl WritingContext {
             "unanswered_questions",
             "pre_conference_summary",
             "thinking_task",
-            "context_summary",
             "last_intent",
             "route_decision",
             "route_history",
@@ -492,6 +507,10 @@ impl WritingContext {
             && self.initial_idea.is_none()
             && self.motivation.is_none()
             && self.observed_scene.is_none()
+            && self.confusion_point.is_none()
+            && self.suspected_mechanism.is_none()
+            && self.selected_mechanism.is_none()
+            && self.context_summary.is_none()
             && self.core_claim.is_none()
             && self.selected_path_id.is_none()
             && self.selected_path.is_none()
@@ -510,6 +529,34 @@ impl WritingContext {
 
     fn has_serializable_stage(&self) -> bool {
         self.stage_present || self.stage != WritingStage::default()
+    }
+
+    fn build_context_summary(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        let topic = self.topic.as_deref().or(self.initial_idea.as_deref());
+        if let Some(topic) = topic {
+            parts.push(format!("主题：{topic}"));
+        }
+        if let Some(initial_idea) = self.initial_idea.as_deref()
+            && Some(initial_idea) != topic
+        {
+            parts.push(format!("学生原始表述：{initial_idea}"));
+        }
+        for (label, value) in [
+            ("已知场景", self.observed_scene.as_deref()),
+            ("动机/触发点", self.motivation.as_deref()),
+            ("真正困惑", self.confusion_point.as_deref()),
+            ("学生猜测机制", self.suspected_mechanism.as_deref()),
+            ("已选关键机制", self.selected_mechanism.as_deref()),
+            ("已选路径", self.selected_path.as_deref()),
+            ("选择理由", self.choice_reason.as_deref()),
+            ("研究问题", self.research_question.as_deref()),
+        ] {
+            if let Some(value) = value {
+                parts.push(format!("{label}：{value}"));
+            }
+        }
+        (!parts.is_empty()).then(|| parts.join("；"))
     }
 }
 
@@ -539,6 +586,26 @@ impl Serialize for WritingContext {
         insert_string(&mut object, "initial_idea", self.initial_idea.as_ref());
         insert_string(&mut object, "motivation", self.motivation.as_ref());
         insert_string(&mut object, "observed_scene", self.observed_scene.as_ref());
+        insert_string(
+            &mut object,
+            "confusion_point",
+            self.confusion_point.as_ref(),
+        );
+        insert_string(
+            &mut object,
+            "suspected_mechanism",
+            self.suspected_mechanism.as_ref(),
+        );
+        insert_string(
+            &mut object,
+            "selected_mechanism",
+            self.selected_mechanism.as_ref(),
+        );
+        insert_string(
+            &mut object,
+            "context_summary",
+            self.context_summary.as_ref(),
+        );
         insert_string(&mut object, "core_claim", self.core_claim.as_ref());
         insert_string(
             &mut object,
@@ -726,6 +793,65 @@ fn clean_scene(text: &str) -> String {
         }
     }
     scene
+}
+
+fn extract_observed_scene(text: &str) -> Option<String> {
+    if contains_any(text, &["为什么替人干活", "替人干活反而", "默认选项"]) {
+        return None;
+    }
+    if text.starts_with("不是")
+        && !contains_any(
+            text,
+            &["拖了进度", "拖进度", "大作业", "课程作业", "小组作业"],
+        )
+    {
+        return None;
+    }
+    contains_any(text, SCENE_MARKERS).then(|| clean_scene(text))
+}
+
+fn extract_confusion_point(text: &str) -> Option<String> {
+    if contains_any(text, &["为什么替人干活", "替人干活反而", "默认选项"])
+        || (text.contains("拖了进度") && contains_any(text, &["替他", "替人", "做了"]))
+    {
+        return Some("为什么替人干活反而成了默认选项".to_owned());
+    }
+    if contains_any(text, &["不敢催", "不好意思说", "抹不下脸", "碍于面子"]) {
+        return Some("有人拖进度后，其他成员为什么不敢催，最后替他完成".to_owned());
+    }
+    if text.contains("分工不均") && contains_any(text, &["正常进行", "仍然", "但是"]) {
+        return Some("为什么分工不均但小组仍能正常推进".to_owned());
+    }
+    None
+}
+
+fn extract_suspected_mechanism(text: &str) -> Option<String> {
+    if contains_any(text, &["抹不下脸", "碍于面子", "不好意思"]) {
+        return Some("面子压力/关系顾虑".to_owned());
+    }
+    if text.contains("评分") {
+        return Some("评分规则".to_owned());
+    }
+    contains_any(text, &["责任", "没人管", "监督"]).then(|| "责任分散或监督不足".to_owned())
+}
+
+fn extract_selected_mechanism(text: &str) -> Option<String> {
+    for (markers, value) in [
+        (&["关系成本", "关系变僵", "撕破脸"][..], "关系成本"),
+        (&["评价成本", "斤斤计较", "不近人情"][..], "评价成本"),
+        (
+            &["成绩成本", "成绩风险", "影响最终作业", "影响最后成绩"][..],
+            "成绩成本",
+        ),
+        (&["拖延者", "知道别人不好意思催"][..], "拖延者预期"),
+        (&["承担者", "自己补上", "代做"][..], "承担者代做"),
+        (&["评分规则", "共同成绩", "过程评价"][..], "评分规则"),
+    ] {
+        if contains_any(text, markers) {
+            return Some(value.to_owned());
+        }
+    }
+    None
 }
 
 fn parse_numbered_choice(text: &str) -> Option<String> {

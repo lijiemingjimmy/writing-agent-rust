@@ -117,6 +117,10 @@ fn allowlisted_user_state(state: &SessionStateData, skill: &SkillDefinition) -> 
         ("initial_idea", writing.initial_idea.as_ref()),
         ("motivation", writing.motivation.as_ref()),
         ("observed_scene", writing.observed_scene.as_ref()),
+        ("confusion_point", writing.confusion_point.as_ref()),
+        ("suspected_mechanism", writing.suspected_mechanism.as_ref()),
+        ("selected_mechanism", writing.selected_mechanism.as_ref()),
+        ("context_summary", writing.context_summary.as_ref()),
         ("core_claim", writing.core_claim.as_ref()),
         ("choice_reason", writing.choice_reason.as_ref()),
     ] {

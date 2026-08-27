@@ -378,7 +378,10 @@ fn topic_change_rebuilds_legacy_task_summary_and_preserves_unrelated_extras() {
     let serialized = serde_json::to_value(&context).unwrap();
 
     assert_eq!(context.extra["thinking_task"], json!("选题"));
-    assert_eq!(context.extra["context_summary"], json!("主题：小组合作"));
+    assert_eq!(
+        context.context_summary.as_deref(),
+        Some("主题：小组合作；学生原始表述：换个方向，我想研究小组合作")
+    );
     assert_eq!(context.extra["future_field"], json!({"preserve": true}));
     assert!(!serialized.to_string().contains("搭子社交"));
     assert!(!serialized.to_string().contains("功能替代方向"));
@@ -426,6 +429,106 @@ fn six_turn_flow_reaches_summary_only_through_real_state_transitions() {
     assert_eq!(decision.stage, FlowStage::SummaryReady);
     assert_eq!(decision.prompt_kind, PromptKind::SummaryReady);
     assert!(decision.ready_for_summary);
+}
+
+#[test]
+fn group_work_thread_keeps_a_structured_context_and_builds_matching_paths() {
+    let mut context = WritingContext::default();
+    let controller = ThinkingFlowController::new();
+    let turns = [
+        "我想讨论这个小组合作的问题",
+        "因为我发现大家分工不均匀但是仍然能正常进行",
+        "就是大作业啊，非常不合理，我觉得是因为大家抹不下脸面",
+        "不是，是抹不下脸面，别人不干活，不好意思说",
+        "当然是有人拖了进度之后不敢催，碍于面子所以把他的那份工作也做了",
+        "当然是为什么替人干活反而成了默认选项",
+        "我觉得是成绩成本",
+    ];
+
+    for message in turns {
+        let decision = turn(&mut context, &controller, message);
+        context.candidate_paths = decision.candidate_paths;
+        context.thinking_stage = Some(decision.stage.clone());
+        context.flow_stage = Some(decision.stage);
+    }
+
+    let serialized = serde_json::to_value(&context).unwrap();
+    assert_eq!(context.topic.as_deref(), Some("小组合作的问题"));
+    assert_eq!(
+        context.initial_idea.as_deref(),
+        Some("我想讨论这个小组合作的问题")
+    );
+    assert_eq!(
+        context.observed_scene.as_deref(),
+        Some("有人拖了进度之后不敢催，碍于面子所以把他的那份工作也做了")
+    );
+    assert_eq!(
+        serialized["confusion_point"],
+        json!("为什么替人干活反而成了默认选项")
+    );
+    assert_eq!(
+        serialized["suspected_mechanism"],
+        json!("面子压力/关系顾虑")
+    );
+    assert_eq!(serialized["selected_mechanism"], json!("成绩成本"));
+    assert_eq!(context.thinking_stage, Some(FlowStage::CandidatePaths));
+    assert_eq!(context.candidate_paths[0].title, "沉默成本方向");
+    assert_eq!(context.candidate_paths[1].title, "默认补位方向");
+    assert_eq!(context.candidate_paths[2].title, "评分制度方向");
+    let summary = serialized["context_summary"].as_str().unwrap();
+    assert!(summary.contains("主题：小组合作的问题"));
+    assert!(summary.contains("已知场景：有人拖了进度之后不敢催"));
+    assert!(summary.contains("真正困惑：为什么替人干活反而成了默认选项"));
+    assert!(summary.contains("学生猜测机制：面子压力/关系顾虑"));
+    assert!(summary.contains("已选关键机制：成绩成本"));
+}
+
+#[test]
+fn group_work_question_stays_in_probe_until_a_mechanism_or_motivation_is_known() {
+    let mut context = WritingContext::default();
+    let controller = ThinkingFlowController::new();
+
+    turn(&mut context, &controller, "我想讨论这个小组合作的问题");
+    let decision = turn(
+        &mut context,
+        &controller,
+        "比如小组合作，为什么会导致分工不均匀",
+    );
+
+    assert_eq!(decision.stage, FlowStage::MotivationProbe);
+    assert_eq!(decision.prompt_kind, PromptKind::MotivationProbe);
+    assert!(decision.candidate_paths.is_empty());
+}
+
+#[test]
+fn a_new_explicit_topic_clears_the_complete_thinking_frame() {
+    let mut context = WritingContext::default();
+    for message in [
+        "我想讨论这个小组合作的问题",
+        "当然是有人拖了进度之后不敢催，碍于面子所以把他的那份工作也做了",
+        "当然是为什么替人干活反而成了默认选项",
+        "我觉得是成绩成本",
+    ] {
+        context.apply_user_message(message);
+    }
+
+    let update = context.apply_user_message("算了，我想写搭子有关的话题");
+    let serialized = serde_json::to_value(&context).unwrap();
+
+    assert!(update.topic_changed);
+    assert_eq!(context.topic.as_deref(), Some("搭子有关的话题"));
+    assert_eq!(
+        context.initial_idea.as_deref(),
+        Some("算了，我想写搭子有关的话题")
+    );
+    assert!(context.observed_scene.is_none());
+    assert!(serialized.get("confusion_point").is_none());
+    assert!(serialized.get("suspected_mechanism").is_none());
+    assert!(serialized.get("selected_mechanism").is_none());
+    assert_eq!(
+        serialized["context_summary"],
+        json!("主题：搭子有关的话题；学生原始表述：算了，我想写搭子有关的话题")
+    );
 }
 
 fn context_with_candidates() -> WritingContext {
