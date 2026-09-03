@@ -3566,6 +3566,7 @@ dependencies = [
  "futures-util",
  "genai",
  "glob",
+ "hmac",
  "http-body-util",
  "multer",
  "regex",
@@ -3584,6 +3585,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
 ]
 

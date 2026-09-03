@@ -22,6 +22,36 @@ pub struct AppConfig {
     pub run_defaults: RunDefaults,
     #[serde(default)]
     pub knowledge: KnowledgeConfig,
+    #[serde(default)]
+    pub security: SecurityConfig,
+    #[serde(default = "default_context_max_chars")]
+    pub conversation_context_max_chars: usize,
+    #[serde(default = "default_context_recent_chars")]
+    pub conversation_context_recent_chars: usize,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SecurityConfig {
+    pub teacher_access_token: Option<String>,
+    pub student_token_pepper: String,
+}
+
+impl Default for SecurityConfig {
+    fn default() -> Self {
+        Self {
+            teacher_access_token: None,
+            student_token_pepper: "development-only-change-me".to_owned(),
+        }
+    }
+}
+
+fn default_context_max_chars() -> usize {
+    24_000
+}
+
+fn default_context_recent_chars() -> usize {
+    12_000
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -100,7 +130,8 @@ impl AppConfig {
         .map_err(|error| AppError::InvalidConfig(error.to_string()))?;
 
         self.validate_cors_origins()?;
-        self.validate_knowledge()
+        self.validate_knowledge()?;
+        self.validate_security()
     }
 
     pub fn build_knowledge_coordinator(
@@ -257,6 +288,29 @@ impl AppConfig {
                     "invalid CORS allowed origin".to_owned(),
                 ));
             }
+        }
+        Ok(())
+    }
+
+    fn validate_security(&self) -> Result<(), AppError> {
+        if self
+            .security
+            .teacher_access_token
+            .as_deref()
+            .is_some_and(str::is_empty)
+            || self.security.student_token_pepper.is_empty()
+        {
+            return Err(AppError::InvalidConfig(
+                "security credentials must not be empty".to_owned(),
+            ));
+        }
+        if self.conversation_context_max_chars < 4_000
+            || self.conversation_context_recent_chars < 2_000
+            || self.conversation_context_recent_chars > self.conversation_context_max_chars
+        {
+            return Err(AppError::InvalidConfig(
+                "invalid conversation context character budgets".to_owned(),
+            ));
         }
         Ok(())
     }

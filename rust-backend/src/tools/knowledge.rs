@@ -351,6 +351,10 @@ pub(crate) fn attach_failures(hits: &mut [SearchHit], failures: &[ProviderFailur
 
 pub(crate) fn http_client(provider: &str, timeouts: HttpTimeouts) -> Result<Client, ToolError> {
     Client::builder()
+        // Provider URLs are explicit application configuration. Ignoring ambient
+        // machine proxies keeps loopback/private deployments deterministic and
+        // avoids silently sending course queries to an unrelated system proxy.
+        .no_proxy()
         .connect_timeout(timeouts.connect)
         .timeout(timeouts.read)
         .user_agent("writing-agent-rust/0.1")

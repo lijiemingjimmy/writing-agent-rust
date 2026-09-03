@@ -13,7 +13,7 @@ use crate::{
     AppState,
     api::{
         ApiError,
-        auth::optional_student,
+        auth::require_student,
         dto::{
             HistoryMessage, ImportSessionResponse, MessageListResponse, RunRequest,
             SessionListItem, SessionListResponse,
@@ -38,13 +38,6 @@ struct SessionListQuery {
 #[derive(Deserialize)]
 struct DocumentUploadQuery {
     filename: Option<String>,
-}
-
-#[derive(Default, Deserialize)]
-struct SessionCreateRequest {
-    user_id: Option<String>,
-    student_name: Option<String>,
-    student_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -74,18 +67,19 @@ async fn list_sessions(
     headers: HeaderMap,
     Query(query): Query<SessionListQuery>,
 ) -> Result<Json<SessionListResponse>, ApiError> {
-    let principal = optional_student(state.pool.clone(), &headers).await?;
+    let principal = require_student(&state, &headers).await?;
     let mut sessions = SessionRepository::new(state.pool.clone())
         .list_recent_with_preview(50, query.user_id.as_deref())
         .await?;
-    if let Some(principal) = principal {
-        let owned = StudentAccessRepository::new(state.pool)
-            .owned_session_ids(&principal.id)
-            .await?
-            .into_iter()
-            .collect::<std::collections::HashSet<_>>();
-        sessions.retain(|item| owned.contains(&item.session.id.to_legacy_hex()));
-    }
+    let owned = StudentAccessRepository::with_pepper(
+        state.pool,
+        state.security.student_token_pepper.clone(),
+    )
+    .owned_session_ids(&principal.id)
+    .await?
+    .into_iter()
+    .collect::<std::collections::HashSet<_>>();
+    sessions.retain(|item| owned.contains(&item.session.id.to_legacy_hex()));
     let sessions = sessions.into_iter().map(SessionListItem::from).collect();
     Ok(Json(SessionListResponse { sessions }))
 }
@@ -93,41 +87,27 @@ async fn list_sessions(
 async fn create_session(
     State(state): State<AppState>,
     headers: HeaderMap,
-    payload: Option<Json<SessionCreateRequest>>,
+    _payload: Option<Json<Value>>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let payload = payload.map(|Json(value)| value).unwrap_or_default();
-    let principal = optional_student(state.pool.clone(), &headers).await?;
-    let user_id = principal
-        .as_ref()
-        .map(|item| item.student_id.as_str())
-        .or(payload.student_id.as_deref())
-        .or(payload.user_id.as_deref());
+    let principal = require_student(&state, &headers).await?;
+    let user_id = Some(principal.student_id.as_str());
     let session = SessionRepository::new(state.pool.clone())
         .create(user_id)
         .await?;
-    if let Some(principal) = principal {
-        StudentAccessRepository::new(state.pool.clone())
-            .bind_session(session.id, &principal.id)
-            .await?;
-        let mut state_json = json!({});
-        state_json["student_profile"] = json!({
-            "name": principal.student_name,
-            "student_id": principal.student_id,
-        });
-        SessionRepository::new(state.pool)
-            .save_state(session.id, state_json)
-            .await?;
-    } else if payload.student_name.is_some() || payload.student_id.is_some() {
-        SessionRepository::new(state.pool)
-            .save_state(
-                session.id,
-                json!({"student_profile": {
-                    "name": payload.student_name,
-                    "student_id": payload.student_id.or(payload.user_id),
-                }}),
-            )
-            .await?;
-    }
+    StudentAccessRepository::with_pepper(
+        state.pool.clone(),
+        state.security.student_token_pepper.clone(),
+    )
+    .bind_session(session.id, &principal.id)
+    .await?;
+    let mut state_json = json!({});
+    state_json["student_profile"] = json!({
+        "name": principal.student_name,
+        "student_id": principal.student_id,
+    });
+    SessionRepository::new(state.pool)
+        .save_state(session.id, state_json)
+        .await?;
     Ok((
         StatusCode::CREATED,
         Json(json!({
@@ -143,7 +123,7 @@ async fn get_session(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     let session_id = parse_session_id(&id)?;
-    ensure_optional_owner(&state, &headers, session_id).await?;
+    ensure_owner(&state, &headers, session_id).await?;
     let session = SessionRepository::new(state.pool.clone())
         .get(session_id)
         .await?;
@@ -164,7 +144,7 @@ async fn list_messages(
     Path(id): Path<String>,
 ) -> Result<Json<MessageListResponse>, ApiError> {
     let session_id = parse_session_id(&id)?;
-    ensure_optional_owner(&state, &headers, session_id).await?;
+    ensure_owner(&state, &headers, session_id).await?;
     SessionRepository::new(state.pool.clone())
         .get(session_id)
         .await?;
@@ -184,7 +164,7 @@ async fn send_message(
     Json(payload): Json<MessageCreateRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let session_id = parse_session_id(&id)?;
-    ensure_optional_owner(&state, &headers, session_id).await?;
+    ensure_owner(&state, &headers, session_id).await?;
     let handle = crate::api::runs::start_run(
         &state,
         RunRequest {
@@ -194,6 +174,7 @@ async fn send_message(
             student_id: None,
             message: payload.content,
             action: None,
+            response_mode: None,
             enable_web_search: false,
         },
     )
@@ -225,7 +206,7 @@ async fn get_report(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     let session_id = parse_session_id(&id)?;
-    ensure_optional_owner(&state, &headers, session_id).await?;
+    ensure_owner(&state, &headers, session_id).await?;
     let state_json = SessionRepository::new(state.pool)
         .load_state(session_id)
         .await?
@@ -256,9 +237,11 @@ async fn get_report(
 
 async fn export_session(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<SessionExportV1>, ApiError> {
     let session_id = parse_session_id(&id)?;
+    ensure_owner(&state, &headers, session_id).await?;
     Ok(Json(
         SessionRepository::new(state.pool)
             .export_v1(session_id)
@@ -274,7 +257,7 @@ async fn upload_document(
     body: Bytes,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let session_id = parse_session_id(&id)?;
-    ensure_optional_owner(&state, &headers, session_id).await?;
+    ensure_owner(&state, &headers, session_id).await?;
     let supplied_content_type = headers
         .get(CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
@@ -364,7 +347,7 @@ async fn parse_multipart_document(
             .content_type()
             .map(ToString::to_string)
             .unwrap_or_else(|| expected.to_owned());
-        if declared != expected {
+        if declared != expected && declared != "application/octet-stream" {
             return Err(ApiError::bad_request("invalid document content type"));
         }
         let bytes = field
@@ -376,15 +359,18 @@ async fn parse_multipart_document(
     Err(ApiError::bad_request("multipart file field is required"))
 }
 
-async fn ensure_optional_owner(
+async fn ensure_owner(
     state: &AppState,
     headers: &HeaderMap,
     session_id: SessionId,
 ) -> Result<(), ApiError> {
-    if let Some(principal) = optional_student(state.pool.clone(), headers).await?
-        && !StudentAccessRepository::new(state.pool.clone())
-            .owns_session(session_id, &principal.id)
-            .await?
+    let principal = require_student(state, headers).await?;
+    if !StudentAccessRepository::with_pepper(
+        state.pool.clone(),
+        state.security.student_token_pepper.clone(),
+    )
+    .owns_session(session_id, &principal.id)
+    .await?
     {
         return Err(ApiError::forbidden("session is not owned by this student"));
     }
@@ -393,11 +379,16 @@ async fn ensure_optional_owner(
 
 async fn import_session(
     State(state): State<AppState>,
+    headers: HeaderMap,
     payload: Result<Json<SessionExportV1>, JsonRejection>,
 ) -> Result<(StatusCode, Json<ImportSessionResponse>), ApiError> {
+    let principal = require_student(&state, &headers).await?;
     let export = parse_json(payload)?;
-    let imported = SessionRepository::new(state.pool)
+    let imported = SessionRepository::new(state.pool.clone())
         .import_v1_with_runs(export)
+        .await?;
+    StudentAccessRepository::with_pepper(state.pool, state.security.student_token_pepper.clone())
+        .bind_session(imported.session.id, &principal.id)
         .await?;
     Ok((
         StatusCode::CREATED,

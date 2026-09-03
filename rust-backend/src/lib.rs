@@ -2,7 +2,7 @@ use std::{path::Path, sync::Arc};
 
 use axum::{
     Router,
-    http::{HeaderValue, Method, header::CONTENT_TYPE},
+    http::{HeaderName, HeaderValue, Method, header},
     routing::get,
 };
 use sqlx::SqlitePool;
@@ -27,6 +27,7 @@ pub struct AppState {
     pub pool: SqlitePool,
     pub run_engine: agent::RunEngine,
     pub model_settings: Arc<llm::ModelSettingsStore>,
+    pub security: Arc<config::SecurityConfig>,
 }
 
 pub async fn build_app(config: AppConfig) -> Result<Router, AppError> {
@@ -43,11 +44,13 @@ pub async fn build_app(config: AppConfig) -> Result<Router, AppError> {
     let registry = skills::SkillRegistry::load(Path::new(&config.skill_root))?;
     let (knowledge, web_enabled) = config.build_knowledge_coordinator()?;
     let knowledge = Arc::new(knowledge);
-    let program = Arc::new(agent::WritingCoachProgram::new(
+    let program = Arc::new(agent::WritingCoachProgram::new_with_context_limits(
         pool.clone(),
         registry,
         knowledge,
         web_enabled,
+        config.conversation_context_max_chars,
+        config.conversation_context_recent_chars,
     ));
     let gateway = Arc::new(llm::GenaiModelGateway::new(model_settings.clone()));
     let run_engine = agent::RunEngine::new(pool.clone(), program, gateway, model_settings.clone());
@@ -56,6 +59,7 @@ pub async fn build_app(config: AppConfig) -> Result<Router, AppError> {
         pool,
         run_engine,
         model_settings,
+        security: Arc::new(config.security.clone()),
     };
 
     let app = api::router(state).route("/health", get(api::health::health));
@@ -73,7 +77,20 @@ pub async fn build_app(config: AppConfig) -> Result<Router, AppError> {
     Ok(app.layer(
         CorsLayer::new()
             .allow_origin(AllowOrigin::list(allowed_origins))
-            .allow_methods([Method::GET, Method::POST, Method::PUT])
-            .allow_headers([CONTENT_TYPE]),
+            .allow_credentials(true)
+            .allow_methods([
+                Method::GET,
+                Method::POST,
+                Method::PUT,
+                Method::DELETE,
+                Method::OPTIONS,
+            ])
+            .allow_headers([
+                header::CONTENT_TYPE,
+                header::AUTHORIZATION,
+                HeaderName::from_static("x-teacher-token"),
+                HeaderName::from_static("last-event-id"),
+                HeaderName::from_static("x-request-id"),
+            ]),
     ))
 }

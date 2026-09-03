@@ -20,8 +20,8 @@ use crate::{
     agent::{RunSubscription, SessionPreparation, UserTurn},
     api::{
         ApiError,
-        auth::optional_student,
-        dto::{ChatResponse, CreateRunResponse, RunRequest, RunResponse},
+        auth::{optional_student, require_student},
+        dto::{ChatResponse, CreateRunResponse, ResponseMode, RunRequest, RunResponse},
         parse_json, parse_optional_json,
     },
     domain::{RunEvent, RunId, RunStatus, SessionId},
@@ -51,10 +51,41 @@ pub fn router() -> Router<AppState> {
 
 async fn create_run(
     State(state): State<AppState>,
+    headers: HeaderMap,
     payload: Result<Json<RunRequest>, JsonRejection>,
 ) -> Result<(StatusCode, Json<CreateRunResponse>), ApiError> {
-    let request = parse_json(payload)?;
+    let mut request = parse_json(payload)?;
+    let requested_session = request.session_id.clone();
+    let principal = optional_student(&state, &headers).await?;
+    if let Some(principal) = &principal {
+        request.user_id = Some(principal.student_id.clone());
+        request.student_id = Some(principal.student_id.clone());
+        request.student_name = Some(principal.student_name.clone());
+        if let Some(session_id) = requested_session.as_deref() {
+            let session_id =
+                SessionId::parse_legacy(session_id).map_err(|_| ApiError::invalid_identifier())?;
+            if !StudentAccessRepository::with_pepper(
+                state.pool.clone(),
+                state.security.student_token_pepper.clone(),
+            )
+            .owns_session(session_id, &principal.id)
+            .await?
+            {
+                return Err(ApiError::forbidden("session is not owned by this student"));
+            }
+        }
+    }
     let handle = start_run(&state, request).await?;
+    if requested_session.is_none()
+        && let Some(principal) = &principal
+    {
+        StudentAccessRepository::with_pepper(
+            state.pool.clone(),
+            state.security.student_token_pepper.clone(),
+        )
+        .bind_session(handle.session_id, &principal.id)
+        .await?;
+    }
     Ok((
         StatusCode::ACCEPTED,
         Json(CreateRunResponse {
@@ -118,29 +149,31 @@ pub(crate) async fn chat(
 ) -> Result<Json<ChatResponse>, ApiError> {
     let mut request = parse_json(payload)?;
     let requested_session = request.session_id.clone();
-    let principal = optional_student(state.pool.clone(), &headers).await?;
-    if let Some(principal) = &principal {
-        request.user_id = Some(principal.student_id.clone());
-        request.student_id = Some(principal.student_id.clone());
-        request.student_name = Some(principal.student_name.clone());
-        if let Some(session_id) = requested_session.as_deref() {
-            let session_id =
-                SessionId::parse_legacy(session_id).map_err(|_| ApiError::invalid_identifier())?;
-            if !StudentAccessRepository::new(state.pool.clone())
-                .owns_session(session_id, &principal.id)
-                .await?
-            {
-                return Err(ApiError::forbidden("session is not owned by this student"));
-            }
+    let principal = require_student(&state, &headers).await?;
+    request.user_id = Some(principal.student_id.clone());
+    request.student_id = Some(principal.student_id.clone());
+    request.student_name = Some(principal.student_name.clone());
+    if let Some(session_id) = requested_session.as_deref() {
+        let session_id =
+            SessionId::parse_legacy(session_id).map_err(|_| ApiError::invalid_identifier())?;
+        if !StudentAccessRepository::with_pepper(
+            state.pool.clone(),
+            state.security.student_token_pepper.clone(),
+        )
+        .owns_session(session_id, &principal.id)
+        .await?
+        {
+            return Err(ApiError::forbidden("session is not owned by this student"));
         }
     }
     let handle = start_run(&state, request).await?;
-    if requested_session.is_none()
-        && let Some(principal) = &principal
-    {
-        StudentAccessRepository::new(state.pool.clone())
-            .bind_session(handle.session_id, &principal.id)
-            .await?;
+    if requested_session.is_none() {
+        StudentAccessRepository::with_pepper(
+            state.pool.clone(),
+            state.security.student_token_pepper.clone(),
+        )
+        .bind_session(handle.session_id, &principal.id)
+        .await?;
     }
     finish_chat(&state, handle).await.map(Json)
 }
@@ -180,6 +213,15 @@ pub(crate) async fn finish_chat(
         .as_object()
         .cloned()
         .unwrap_or_default();
+    let response_mode = if metadata.get("action").and_then(Value::as_str) == Some("synthesize") {
+        "synthesize"
+    } else {
+        "chat"
+    };
+    metadata.insert(
+        "response_mode".to_owned(),
+        Value::String(response_mode.to_owned()),
+    );
     metadata.insert("run_id".to_owned(), Value::String(run_id_hex));
     let current_skill = metadata
         .get("selected_skill")
@@ -231,7 +273,11 @@ pub(crate) async fn start_run(
     let mut turn = UserTurn::new(session_id, request.message)
         .with_limits(MAX_STEPS, None, None)
         .with_web_search(request.enable_web_search);
-    if let Some(action) = request.action {
+    let requested_action = request.action.or_else(|| {
+        (request.response_mode == Some(ResponseMode::Synthesize))
+            .then_some(crate::agent::TurnAction::Synthesize)
+    });
+    if let Some(action) = requested_action {
         turn = turn.with_action(action.as_str());
     }
     Ok(state

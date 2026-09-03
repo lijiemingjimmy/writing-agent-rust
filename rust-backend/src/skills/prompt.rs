@@ -93,11 +93,10 @@ impl PromptBuilder {
         }
 
         for message in context.recent_messages {
-            let content = truncate_chars(message.content.trim(), 600);
             match message.role.as_str() {
                 "assistant" | "user" => messages.push(untrusted_data_message(
                     &format!("Recent {} message", message.role),
-                    &content,
+                    message.content.trim(),
                 )),
                 _ => {}
             }
@@ -157,7 +156,7 @@ impl PromptBuilder {
                 Value::Object(context.confirmed_facts.clone()),
             ));
         }
-        push_recent_messages(&mut messages, context.recent_messages, 12);
+        push_recent_messages(&mut messages, context.recent_messages);
         messages.push(untrusted_data_message(
             "Latest User Turn",
             context.user_message.trim(),
@@ -200,7 +199,7 @@ impl PromptBuilder {
             "Writing Context",
             allowlisted_user_state(context.state, context.skill),
         ));
-        push_recent_messages(&mut messages, context.recent_messages, 10);
+        push_recent_messages(&mut messages, context.recent_messages);
         messages.push(untrusted_data_message(
             "Latest User Message",
             context.user_message.trim(),
@@ -213,13 +212,12 @@ impl PromptBuilder {
     }
 }
 
-fn push_recent_messages(messages: &mut Vec<ModelMessage>, recent: &[Message], limit: usize) {
-    let start = recent.len().saturating_sub(limit);
-    for message in &recent[start..] {
+fn push_recent_messages(messages: &mut Vec<ModelMessage>, recent: &[Message]) {
+    for message in recent {
         if matches!(message.role.as_str(), "assistant" | "user") {
             messages.push(untrusted_data_message(
                 &format!("Recent {} message", message.role),
-                &truncate_chars(message.content.trim(), 600),
+                message.content.trim(),
             ));
         }
     }

@@ -305,34 +305,93 @@ impl Harness {
 }
 
 #[tokio::test]
-async fn synthesize_action_returns_deterministic_complete_thinking_without_model_call() {
-    let app = Harness::new([], false).await;
+async fn synthesize_action_uses_the_whole_session_and_returns_a_complete_non_questioning_plan() {
+    let app = Harness::new(
+        [
+            Ok("先确认一个具体场景：哪次合作最能体现责任边界不清？"),
+            Ok(r#"```json
+            {
+                "topic_positioning":"课程小组合作中的责任边界与搭便车现象",
+                "core_problem":"解释责任边界不清如何放大搭便车",
+                "working_thesis":"暂定认为模糊分工通过责任扩散降低了个体投入",
+                "concept_path":["界定责任边界与责任扩散"],
+                "article_structure":["界定现象","解释机制","检验边界"],
+                "materials":["课程作业访谈与分工记录"],
+                "next_step":"整理三次合作中的分工记录"
+            }
+            ```"#),
+        ],
+        false,
+    )
+    .await;
+    let first = app
+        .run("我想写小组合作，核心观点是责任边界不清会放大搭便车。")
+        .await;
+    assert_eq!(first.status, RunStatus::Completed);
     let result = app
         .run_turn(
-            UserTurn::new(
-                app.session_id,
-                "我想写小组合作，核心观点是责任边界不清会放大搭便车，我有课程作业访谈材料。",
-            )
-            .with_action("synthesize"),
+            UserTurn::new(app.session_id, "我有课程作业访谈材料，现在形成完整思路。")
+                .with_action("synthesize"),
         )
         .await;
 
-    assert_eq!(result.status, RunStatus::Completed);
+    assert_eq!(result.status, RunStatus::Completed, "{:?}", result.events);
     let answer = result.answer.expect("synthesis answer");
     for heading in [
-        "## 选题雏形",
+        "## 选题定位",
+        "## 核心问题",
         "## 核心判断",
-        "## 概念关系",
-        "## 论证路径",
-        "## 材料建议",
-        "## 待核实事项",
+        "## 概念路径",
+        "## 文章结构",
+        "## 可用材料",
+        "## 下一步",
     ] {
         assert!(answer.contains(heading), "missing heading: {heading}");
     }
     assert!(!answer.ends_with('？'));
     assert_eq!(result.metadata["action"], "synthesize");
     assert_eq!(result.metadata["awaiting_slots"], json!([]));
-    assert!(app.gateway.requests().is_empty());
+    let requests = app.gateway.requests();
+    let synthesis_prompt = requests.last().expect("synthesis model call");
+    let prompt = synthesis_prompt
+        .messages
+        .iter()
+        .map(|message| message.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(prompt.contains("责任边界不清会放大搭便车"));
+    assert!(prompt.contains("课程作业访谈材料"));
+    assert!(prompt.contains("不得继续追问"));
+}
+
+#[tokio::test]
+async fn contextual_interest_then_problem_enters_socratic_and_sends_the_whole_session() {
+    let app = Harness::new(
+        [
+            Ok("你最关注网络安全里的哪一种真实经历？"),
+            Ok("你说的网上社交问题里，哪一次具体经历最让你觉得值得写？"),
+        ],
+        false,
+    )
+    .await;
+    let first = app.run("你好，我对于网络安全非常感兴趣").await;
+    assert_eq!(first.metadata["selected_skill"], "socratic_review");
+    let first_answer = first.answer.expect("first Socratic answer");
+
+    let second = app.run("就是大家现在在网上社交会存在一些问题吧").await;
+    assert_eq!(second.metadata["selected_skill"], "socratic_review");
+    let requests = app.gateway.requests();
+    let prompt = requests
+        .last()
+        .expect("second Socratic call")
+        .messages
+        .iter()
+        .map(|message| message.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(prompt.contains("网络安全非常感兴趣"));
+    assert!(prompt.contains(&first_answer));
+    assert!(prompt.contains("网上社交会存在一些问题"));
 }
 
 #[tokio::test]
@@ -352,7 +411,7 @@ async fn unsafe_input_is_intercepted_before_router_model_and_preserves_current_s
 }
 
 #[tokio::test]
-async fn long_conversation_prompt_compacts_old_turns_and_keeps_twelve_recent_messages() {
+async fn ordinary_length_conversation_keeps_every_message_without_compression() {
     let app = Harness::new([Ok("课程材料给出了定义。")], false).await;
     let repository = MessageRepository::new(app.pool.clone());
     for index in 0..16 {
@@ -381,26 +440,78 @@ async fn long_conversation_prompt_compacts_old_turns_and_keeps_twelve_recent_mes
         .map(|message| message.content.as_str())
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(encoded.contains("Durable conversation summary"));
+    assert!(!encoded.contains("Durable conversation summary"));
     assert!(encoded.contains("EARLIEST_FACT_SENTINEL"));
     let recent = prompt
         .iter()
         .filter(|message| message.content.contains("Recent "))
         .collect::<Vec<_>>();
-    assert_eq!(recent.len(), 12);
+    assert_eq!(recent.len(), 16);
     assert!(
         recent
             .iter()
             .all(|message| !message.content.contains("老师讲过 audience awareness 吗？"))
     );
+}
+
+#[tokio::test]
+async fn oversized_conversation_summarizes_older_messages_and_keeps_first_and_recent_turns() {
+    let app = Harness::new(
+        [
+            Ok("早期摘要：学生最初想研究网络社交风险。"),
+            Ok("课程材料给出了相关定义。"),
+        ],
+        false,
+    )
+    .await;
+    let repository = MessageRepository::new(app.pool.clone());
+    for index in 0..28 {
+        let marker = if index == 0 {
+            "FIRST_SESSION_GOAL"
+        } else if index == 27 {
+            "LATEST_HISTORY_FACT"
+        } else {
+            "history"
+        };
+        repository
+            .add(
+                app.session_id,
+                if index % 2 == 0 { "user" } else { "assistant" },
+                &format!("{marker}-{index}-{}", "甲".repeat(1_000)),
+                Some(json!({})),
+            )
+            .await
+            .unwrap();
+    }
+
+    let result = app.run("老师讲过 audience awareness 吗？").await;
+    assert_eq!(result.status, RunStatus::Completed, "{:?}", result.events);
+    let requests = app.gateway.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].messages[0].content.contains("压缩同一会话"));
+    let answer_prompt = requests[1]
+        .messages
+        .iter()
+        .map(|message| message.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(answer_prompt.contains("早期摘要：学生最初想研究网络社交风险"));
+    assert!(answer_prompt.contains("[First User Message]"));
+    assert!(answer_prompt.contains("FIRST_SESSION_GOAL"));
+    assert!(answer_prompt.contains("LATEST_HISTORY_FACT"));
     let state = SessionRepository::new(app.pool.clone())
         .load_state(app.session_id)
         .await
         .unwrap();
+    assert_eq!(
+        state.state_json["conversation_memory"]["summary"],
+        "早期摘要：学生最初想研究网络社交风险。"
+    );
     assert!(
-        state.state_json["conversation_memory_summary"]
-            .as_str()
-            .is_some_and(|summary| summary.contains("EARLIEST_FACT_SENTINEL"))
+        state.state_json["conversation_memory"]["covered_message_count"]
+            .as_u64()
+            .unwrap()
+            > 0
     );
 }
 
@@ -1033,21 +1144,21 @@ async fn revision_submission_persists_comparison_metadata() {
 }
 
 #[tokio::test]
-async fn acknowledgement_uses_the_contextual_general_model_lane() {
-    let app = Harness::new([Ok("嗯，我在。你可以接着说。")], false).await;
+async fn acknowledgement_returns_to_course_scope_without_using_the_model() {
+    let app = Harness::new([], false).await;
     let result = app.run("嗯").await;
 
     assert_eq!(result.status, RunStatus::Completed);
     assert_eq!(result.metadata["selected_skill"], Value::Null);
     assert_eq!(result.metadata["general"], json!(true));
-    assert_eq!(result.answer.as_deref(), Some("嗯，我在。你可以接着说。"));
-    assert_eq!(app.gateway.requests().len(), 1);
-    assert_eq!(app.gateway.requests()[0].temperature, Some(0.3));
+    assert!(result.answer.as_deref().unwrap().contains("写作与沟通课程"));
+    assert_eq!(result.metadata["scope_redirected"], true);
+    assert!(app.gateway.requests().is_empty());
 }
 
 #[tokio::test]
-async fn ambiguous_turn_is_answered_normally_without_a_forced_skill_route() {
-    let app = Harness::new([Ok("先说说你现在最想推进的事情。")], false).await;
+async fn ambiguous_turn_is_redirected_without_a_forced_skill_route() {
+    let app = Harness::new([], false).await;
     let result = app.run("请帮我判断接下来怎么办").await;
     assert_eq!(result.status, RunStatus::Completed);
     assert_eq!(result.metadata["selected_skill"], Value::Null);
@@ -1058,7 +1169,8 @@ async fn ambiguous_turn_is_answered_normally_without_a_forced_skill_route() {
             .iter()
             .all(|event| event.kind != "decision.warning")
     );
-    assert_eq!(app.gateway.requests().len(), 1);
+    assert_eq!(result.metadata["scope_redirected"], true);
+    assert!(app.gateway.requests().is_empty());
 }
 
 #[tokio::test]
@@ -1186,60 +1298,114 @@ async fn awaited_draft_becomes_the_revision_comparison_baseline() {
 }
 
 #[tokio::test]
-async fn reset_clears_context_without_creating_a_skill_event() {
-    let app = Harness::new([Ok("课件材料提供了一个定义。")], false).await;
+async fn reset_like_text_is_an_ordinary_message_in_the_same_locked_branch() {
+    let app = Harness::new(
+        [
+            Ok("课件材料提供了一个定义。"),
+            Ok("我会继续当前课件问答分支。"),
+        ],
+        false,
+    )
+    .await;
     app.run("老师讲过 audience awareness 吗？").await;
-    let before = SkillEventRepository::new(app.pool.clone())
-        .list_by_session(app.session_id)
-        .await
-        .unwrap()
-        .len();
-    let reset = app.run("重置").await;
-    assert_eq!(reset.metadata["selected_skill"], Value::Null);
-    assert_eq!(reset.metadata["skill_id"], Value::Null);
-    assert_eq!(reset.metadata["general_response"], true);
-    assert_eq!(reset.metadata["reset"], true);
-    assert_eq!(
-        reset.metadata["route_decision"]["target_skill"],
-        Value::Null
-    );
-    assert_eq!(reset.metadata["route_decision"]["intent"], "reset");
-    assert_eq!(
-        reset.metadata["student_progress"]["current_skill"],
-        Value::Null
-    );
-    assert!(
-        reset.metadata["student_progress"]["next_task"]
-            .as_str()
-            .is_some_and(|value| !value.is_empty())
-    );
-    assert_eq!(reset.metadata["used_corpus_files"], json!([]));
-    assert_eq!(reset.metadata["literature_search"]["results"], json!([]));
-    assert_eq!(reset.metadata["web_search"]["results"], json!([]));
-    assert_eq!(reset.metadata["guardrail_triggered"], false);
+    let reset = app.run("重新开始").await;
+    assert_eq!(reset.metadata["selected_skill"], "ppt_qa");
+    assert_eq!(reset.metadata["skill_id"], "ppt_qa");
+    assert_ne!(reset.metadata["reset"], true);
+    assert_eq!(reset.metadata["branch"]["mode"], "locked");
+    assert_eq!(reset.metadata["branch"]["active_skill"], "ppt_qa");
     let state = SessionRepository::new(app.pool.clone())
         .load_state(app.session_id)
         .await
         .unwrap();
-    assert_eq!(state.state_json, json!({}));
-    let after = SkillEventRepository::new(app.pool.clone())
-        .list_by_session(app.session_id)
-        .await
-        .unwrap()
-        .len();
-    assert_eq!(before, after);
-    let messages = MessageRepository::new(app.pool.clone())
-        .list_by_session(app.session_id)
+    assert_eq!(state.state_json["current_skill"], "ppt_qa");
+}
+
+#[tokio::test]
+async fn bare_branch_switch_waits_for_a_recognized_target_and_preserves_context() {
+    let app = Harness::new([Ok("先说说你观察到的具体场景。")], false).await;
+    let first = app.run("我想要写关于网络安全的东西").await;
+    assert_eq!(first.metadata["selected_skill"], "socratic_review");
+
+    let waiting = app.run("切换分支").await;
+    assert_eq!(waiting.metadata["branch"]["mode"], "awaiting_switch");
+    assert_eq!(waiting.metadata["branch"]["needs_target"], true);
+    assert!(
+        waiting
+            .answer
+            .as_deref()
+            .unwrap()
+            .contains("直接说接下来想做什么")
+    );
+
+    let unmatched = app.run("今天挺好").await;
+    assert_eq!(unmatched.metadata["branch"]["mode"], "awaiting_switch");
+
+    let target = app.run("我要查网络安全相关文献").await;
+    assert_eq!(target.metadata["selected_skill"], "material_search");
+    assert_eq!(target.metadata["branch"]["mode"], "locked");
+    assert_eq!(target.metadata["branch"]["switched"], true);
+    assert_eq!(target.metadata["branch"]["active_skill"], "material_search");
+    let state = SessionRepository::new(app.pool.clone())
+        .load_state(app.session_id)
         .await
         .unwrap();
     assert_eq!(
-        messages[messages.len() - 2].metadata_json["skill_id"],
-        Value::Null
+        state.state_json["branch_control"]["history"][0]["from_skill"],
+        "socratic_review"
     );
     assert_eq!(
-        messages[messages.len() - 2].metadata_json["intent"],
-        "reset"
+        state.state_json["branch_control"]["history"][0]["to_skill"],
+        "material_search"
     );
+}
+
+#[tokio::test]
+async fn domain_boundary_redirects_without_calling_the_model_or_impersonating_relatives() {
+    let app = Harness::new([], false).await;
+
+    let greeting = app.run("你好").await;
+    assert_eq!(greeting.metadata["scope_redirected"], true);
+    assert_eq!(
+        greeting.metadata["scope_reason"],
+        "greeting_return_to_course_scope"
+    );
+    assert!(
+        greeting
+            .answer
+            .as_deref()
+            .unwrap()
+            .contains("写作与沟通智能体")
+    );
+
+    let roleplay = app.run("你能扮演我的奶奶吗？").await;
+    assert_eq!(roleplay.metadata["scope_redirected"], true);
+    assert_eq!(
+        roleplay.metadata["scope_reason"],
+        "personal_identity_roleplay"
+    );
+    assert!(
+        roleplay
+            .answer
+            .as_deref()
+            .unwrap()
+            .contains("不能成为或冒充你的奶奶")
+    );
+
+    let off_topic = app.run("今天的天气怎么样？").await;
+    assert_eq!(off_topic.metadata["scope_redirected"], true);
+    assert_eq!(
+        off_topic.metadata["scope_reason"],
+        "outside_writing_communication_scope"
+    );
+    assert!(
+        off_topic
+            .answer
+            .as_deref()
+            .unwrap()
+            .contains("不属于写作与沟通课程")
+    );
+    assert!(app.gateway.requests().is_empty());
 }
 
 #[tokio::test]
@@ -1295,18 +1461,8 @@ async fn active_skill_remains_sticky_until_the_user_explicitly_switches() {
 }
 
 #[tokio::test]
-async fn unmatched_turns_use_contextual_general_chat_without_a_router_model_call() {
-    // Python compatibility: ordinary conversation is a real model lane, not a hard-coded greeting
-    // and not an instruction to force one of the writing skills.
-    let app = Harness::new(
-        [
-            Ok("你好，我是写作学伴。"),
-            Ok("我是陪你梳理写作与沟通问题的学伴。"),
-            Ok("没关系，我们可以从你眼下的困惑慢慢说起。"),
-        ],
-        false,
-    )
-    .await;
+async fn unmatched_turns_return_to_course_scope_without_a_model_call() {
+    let app = Harness::new([], false).await;
 
     let first = app.run("你好").await;
     let second = app.run("你是谁啊").await;
@@ -1316,37 +1472,11 @@ async fn unmatched_turns_use_contextual_general_chat_without_a_router_model_call
     assert_eq!(second.metadata["selected_skill"], Value::Null);
     assert_eq!(third.metadata["selected_skill"], Value::Null);
     assert_eq!(third.metadata["general_response"], true);
-    assert_eq!(
-        third.answer.as_deref(),
-        Some("没关系，我们可以从你眼下的困惑慢慢说起。")
-    );
+    assert!(third.answer.as_deref().unwrap().contains("写作与沟通课程"));
+    assert_eq!(third.metadata["scope_redirected"], true);
 
     let requests = app.gateway.requests();
-    assert_eq!(requests.len(), 3);
-    assert!(
-        requests
-            .iter()
-            .all(|request| request.temperature == Some(0.3))
-    );
-    assert!(
-        requests
-            .iter()
-            .all(|request| request.messages.iter().all(|message| {
-                !message
-                    .content
-                    .contains("Choose one installed writing-coach skill")
-            }))
-    );
-    let latest_prompt = requests[2]
-        .messages
-        .iter()
-        .map(|message| message.content.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(latest_prompt.contains("你好"));
-    assert!(latest_prompt.contains("我是陪你梳理写作与沟通问题的学伴。"));
-    assert!(latest_prompt.contains("你是谁啊"));
-    assert!(latest_prompt.contains("我不知道"));
+    assert!(requests.is_empty());
 
     let persisted = SessionRepository::new(app.pool.clone())
         .load_state(app.session_id)
@@ -1413,7 +1543,7 @@ async fn general_prompt_allowlists_and_frames_persisted_state() {
         .await
         .unwrap();
 
-    app.run("你好").await;
+    app.run("我在写作上有点烦，先接着聊。").await;
     let request = app.gateway.requests().pop().unwrap();
     let all_messages = request
         .messages
@@ -1778,6 +1908,7 @@ async fn every_meaningful_phase_has_ordered_start_and_completion_events() {
     assert_eq!(phase_events.len() % 2, 0);
     let expected = [
         "accept_input",
+        "build_conversation_context",
         "classify_input_safety",
         "route_skill",
         "fill_required_slots",

@@ -25,6 +25,10 @@ esac
 
 bad_remote=$(git -C "$repo_root" remote -v | awk '{print $2}' | sort -u | grep -Ev '^(https://github\.com/lijiemingjimmy/writing-agent-rust(\.git)?|git@git\.tsinghua\.edu\.cn:lijm25/writing-agent-rust\.git|git@git\.tsinghua\.edu\.cn:rust-course/2026/agent/agent-lijm25\.git)$' || true)
 [ -z "$bad_remote" ] || fail "unexpected Git remote: $bad_remote"
+if git -C "$repo_root" remote get-url course >/dev/null 2>&1; then
+  branch_remote=$(git -C "$repo_root" config --get branch.main.remote || true)
+  [ "$branch_remote" = "course" ] || fail "main is not configured to push to the course remote"
+fi
 
 for forbidden_path in \
   app pyproject.toml .venv .github/workflows/deploy-pages.yml \

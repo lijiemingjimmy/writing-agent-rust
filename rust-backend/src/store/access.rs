@@ -1,4 +1,5 @@
-use sha2::{Digest, Sha256};
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
 
@@ -14,11 +15,19 @@ pub struct StudentPrincipal {
 #[derive(Clone)]
 pub struct StudentAccessRepository {
     pool: SqlitePool,
+    pepper: String,
 }
 
 impl StudentAccessRepository {
     pub fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+        Self::with_pepper(pool, "development-only-change-me")
+    }
+
+    pub fn with_pepper(pool: SqlitePool, pepper: impl Into<String>) -> Self {
+        Self {
+            pool,
+            pepper: pepper.into(),
+        }
     }
 
     pub async fn bootstrap(
@@ -40,7 +49,7 @@ impl StudentAccessRepository {
         .bind(&principal.id)
         .bind(&principal.student_name)
         .bind(&principal.student_id)
-        .bind(token_digest(&token))
+        .bind(token_digest(&self.pepper, &token))
         .execute(&self.pool)
         .await?;
         Ok((token, principal))
@@ -51,7 +60,7 @@ impl StudentAccessRepository {
             "SELECT id, student_name, student_id FROM student_principals \
              WHERE token_hash = ? AND revoked_at IS NULL",
         )
-        .bind(token_digest(token))
+        .bind(token_digest(&self.pepper, token))
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(|row| StudentPrincipal {
@@ -103,6 +112,10 @@ impl StudentAccessRepository {
     }
 }
 
-fn token_digest(token: &str) -> String {
-    format!("{:x}", Sha256::digest(token.as_bytes()))
+fn token_digest(pepper: &str, token: &str) -> String {
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(pepper.as_bytes()).expect("HMAC accepts keys of any size");
+    mac.update(token.as_bytes());
+    let bytes = mac.finalize().into_bytes();
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }

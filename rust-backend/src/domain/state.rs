@@ -1258,6 +1258,7 @@ where
 #[derive(Clone, Debug, Default)]
 pub struct RouteInput {
     pub message: String,
+    pub context_text: String,
     pub current_skill: Option<String>,
     pub awaiting_slots: Vec<String>,
     pub collected_slots: bool,
@@ -1275,6 +1276,11 @@ impl RouteInput {
 
     pub fn with_current_skill(mut self, skill: impl Into<String>) -> Self {
         self.current_skill = Some(skill.into());
+        self
+    }
+
+    pub fn with_context_text(mut self, context: impl Into<String>) -> Self {
+        self.context_text = context.into();
         self
     }
 

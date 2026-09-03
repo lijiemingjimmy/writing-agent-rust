@@ -2,8 +2,16 @@ bind_addr = "127.0.0.1:3000"
 database_url = "sqlite://rust_course_demo.db"
 skill_root = "skills"
 corpus_root = "corpus"
-# Set this to the exact Web origin when the student UI is hosted cross-origin.
-cors_allowed_origins = []
+# Add the exact student and teacher Web origins when they are hosted cross-origin.
+cors_allowed_origins = ["https://student.example.edu", "https://teacher.example.edu"]
+conversation_context_max_chars = 24000
+conversation_context_recent_chars = 12000
+
+[security]
+# Omit teacher_access_token only for local development. Set a strong random value
+# in the private runtime config before exposing teacher APIs.
+# teacher_access_token = "replace-with-a-random-runtime-secret"
+student_token_pepper = "replace-with-a-random-runtime-secret"
 
 [model]
 provider = "openai-compatible"

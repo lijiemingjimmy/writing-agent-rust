@@ -3,7 +3,10 @@ use std::{fs, path::PathBuf};
 use axum::{
     Router,
     body::Body,
-    http::{Request, StatusCode, header::CONTENT_TYPE},
+    http::{
+        Request, StatusCode,
+        header::{AUTHORIZATION, CONTENT_TYPE},
+    },
 };
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -14,6 +17,7 @@ use writing_coach_server::{
     AppConfig,
     domain::SessionId,
     store::{
+        access::StudentAccessRepository,
         sessions::{
             DocumentRepository, MessageRepository, SessionRepository, SkillEventRepository,
         },
@@ -144,9 +148,9 @@ async fn repositories_preserve_legacy_json_and_import_under_new_ids(pool: Sqlite
 
 #[tokio::test]
 async fn session_history_matches_existing_frontend_contract() {
-    let (app, database_path) = app_with_session("student-1", "我的选题").await;
+    let (app, database_path, token) = app_with_session("student-1", "我的选题").await;
 
-    let sessions = get_json(app.clone(), "/api/sessions?user_id=student-1").await;
+    let sessions = get_json(app.clone(), "/api/sessions?user_id=student-1", &token).await;
     let item = &sessions["sessions"][0];
     assert_eq!(item["session_id"].as_str().unwrap().len(), 32);
     assert_eq!(item["user_id"], "student-1");
@@ -158,7 +162,12 @@ async fn session_history_matches_existing_frontend_contract() {
     assert!(item["updated_at"].is_string());
 
     let session_id = item["session_id"].as_str().unwrap();
-    let messages = get_json(app.clone(), &format!("/api/sessions/{session_id}/messages")).await;
+    let messages = get_json(
+        app.clone(),
+        &format!("/api/sessions/{session_id}/messages"),
+        &token,
+    )
+    .await;
     assert_eq!(messages["messages"][0]["id"].as_str().unwrap().len(), 32);
     assert_eq!(messages["messages"][0]["session_id"], session_id);
     assert_eq!(messages["messages"][0]["role"], "user");
@@ -174,14 +183,14 @@ async fn session_history_matches_existing_frontend_contract() {
 
 #[tokio::test]
 async fn session_list_exposes_student_profile_from_preserved_state() {
-    let (app, database_path) = app_with_session_and_state(
+    let (app, database_path, token) = app_with_session_and_state(
         "20260001",
         "我的选题",
         json!({"student_profile": {"name": "张三", "student_id": "20260001"}}),
     )
     .await;
 
-    let sessions = get_json(app, "/api/sessions?user_id=20260001").await;
+    let sessions = get_json(app, "/api/sessions?user_id=20260001", &token).await;
     let item = &sessions["sessions"][0];
     assert_eq!(item["student_name"], "张三");
     assert_eq!(item["student_id"], "20260001");
@@ -190,26 +199,27 @@ async fn session_list_exposes_student_profile_from_preserved_state() {
 }
 
 #[tokio::test]
-async fn missing_session_history_returns_not_found() {
-    let (app, database_path) = app_with_session("student-1", "我的选题").await;
+async fn missing_session_history_is_hidden_from_authenticated_student() {
+    let (app, database_path, token) = app_with_session("student-1", "我的选题").await;
     let response = app
         .oneshot(
             Request::builder()
                 .uri("/api/sessions/0123456789abcdef0123456789abcdef/messages")
+                .header(AUTHORIZATION, bearer(&token))
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
 
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
     remove_database(&database_path);
 }
 
 #[tokio::test]
 async fn upload_text_document_stores_bounded_utf8_without_a_server_path() {
-    let (app, database_path) = app_with_session("student-1", "我的选题").await;
-    let sessions = get_json(app.clone(), "/api/sessions?user_id=student-1").await;
+    let (app, database_path, token) = app_with_session("student-1", "我的选题").await;
+    let sessions = get_json(app.clone(), "/api/sessions?user_id=student-1", &token).await;
     let session_id = sessions["sessions"][0]["session_id"].as_str().unwrap();
     let response = app
         .clone()
@@ -219,6 +229,7 @@ async fn upload_text_document_stores_bounded_utf8_without_a_server_path() {
                 .uri(format!(
                     "/api/sessions/{session_id}/documents?filename=field-notes.md"
                 ))
+                .header(AUTHORIZATION, bearer(&token))
                 .header(CONTENT_TYPE, "text/markdown")
                 .body(Body::from("# 访谈\r\n\r\n学生观察记录"))
                 .unwrap(),
@@ -242,7 +253,12 @@ async fn upload_text_document_stores_bounded_utf8_without_a_server_path() {
     assert_eq!(uploaded["content_type"], "text/markdown");
     assert_eq!(uploaded["size_bytes"], 30);
 
-    let export = get_json(app.clone(), &format!("/api/sessions/{session_id}/export")).await;
+    let export = get_json(
+        app.clone(),
+        &format!("/api/sessions/{session_id}/export"),
+        &token,
+    )
+    .await;
     let document = &export["documents"][0];
     assert_eq!(document["raw_path"], Value::Null);
     assert_eq!(document["parsed_text"], "# 访谈\n\n学生观察记录");
@@ -255,8 +271,8 @@ async fn upload_text_document_stores_bounded_utf8_without_a_server_path() {
 
 #[tokio::test]
 async fn upload_text_document_rejects_paths_types_invalid_utf8_and_oversize_without_rows() {
-    let (app, database_path) = app_with_session("student-1", "我的选题").await;
-    let sessions = get_json(app.clone(), "/api/sessions?user_id=student-1").await;
+    let (app, database_path, token) = app_with_session("student-1", "我的选题").await;
+    let sessions = get_json(app.clone(), "/api/sessions?user_id=student-1", &token).await;
     let session_id = sessions["sessions"][0]["session_id"].as_str().unwrap();
     let cases = [
         (
@@ -293,6 +309,7 @@ async fn upload_text_document_rejects_paths_types_invalid_utf8_and_oversize_with
                     .uri(format!(
                         "/api/sessions/{session_id}/documents?filename={filename}"
                     ))
+                    .header(AUTHORIZATION, bearer(&token))
                     .header(CONTENT_TYPE, content_type)
                     .body(Body::from(bytes))
                     .unwrap(),
@@ -310,6 +327,7 @@ async fn upload_text_document_rejects_paths_types_invalid_utf8_and_oversize_with
                 .uri(format!(
                     "/api/sessions/{session_id}/documents?filename=oversize.txt"
                 ))
+                .header(AUTHORIZATION, bearer(&token))
                 .header(CONTENT_TYPE, "text/plain")
                 .body(Body::from(vec![b'x'; 256 * 1024 + 1]))
                 .unwrap(),
@@ -318,14 +336,19 @@ async fn upload_text_document_rejects_paths_types_invalid_utf8_and_oversize_with
         .unwrap();
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
 
-    let export = get_json(app.clone(), &format!("/api/sessions/{session_id}/export")).await;
+    let export = get_json(
+        app.clone(),
+        &format!("/api/sessions/{session_id}/export"),
+        &token,
+    )
+    .await;
     assert!(export["documents"].as_array().unwrap().is_empty());
 
     drop(app);
     remove_database(&database_path);
 }
 
-async fn app_with_session(user_id: &str, content: &str) -> (Router, PathBuf) {
+async fn app_with_session(user_id: &str, content: &str) -> (Router, PathBuf, String) {
     app_with_session_and_state(user_id, content, json!({})).await
 }
 
@@ -333,7 +356,7 @@ async fn app_with_session_and_state(
     user_id: &str,
     content: &str,
     state: Value,
-) -> (Router, PathBuf) {
+) -> (Router, PathBuf, String) {
     let database_path =
         std::env::temp_dir().join(format!("writing-coach-session-api-{}.db", Uuid::new_v4()));
     let database_url = format!("sqlite://{}", database_path.display());
@@ -342,6 +365,14 @@ async fn app_with_session_and_state(
 
     let sessions = SessionRepository::new(pool.clone());
     let session = sessions.create(Some(user_id)).await.unwrap();
+    let (token, principal) = StudentAccessRepository::new(pool.clone())
+        .bootstrap(user_id, user_id)
+        .await
+        .unwrap();
+    StudentAccessRepository::new(pool.clone())
+        .bind_session(session.id, &principal.id)
+        .await
+        .unwrap();
     sessions.save_state(session.id, state).await.unwrap();
     MessageRepository::new(pool.clone())
         .add(session.id, "user", content, Some(json!({"kind": "prompt"})))
@@ -354,17 +385,28 @@ async fn app_with_session_and_state(
     (
         writing_coach_server::build_app(config).await.unwrap(),
         database_path,
+        token,
     )
 }
 
-async fn get_json(app: Router, uri: &str) -> Value {
+async fn get_json(app: Router, uri: &str, token: &str) -> Value {
     let response = app
-        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .header(AUTHORIZATION, bearer(token))
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let body = response.into_body().collect().await.unwrap().to_bytes();
     serde_json::from_slice(&body).unwrap()
+}
+
+fn bearer(token: &str) -> String {
+    format!("Bearer {token}")
 }
 
 fn remove_database(database_path: &PathBuf) {

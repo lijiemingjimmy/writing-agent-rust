@@ -819,8 +819,14 @@ async fn concurrent_model_calls_stop_after_first_exact_budget_exhaustion() {
         FakeGateway::success(1, 1),
     )
     .await;
-    let turn =
-        UserTurn::new(harness.session_id, "concurrent models").with_limits(2, Some(524), None);
+    harness
+        .settings
+        .update(writing_coach_server::llm::ModelSettingsUpdate {
+            max_output_tokens: Some(1),
+            ..Default::default()
+        })
+        .unwrap();
+    let turn = UserTurn::new(harness.session_id, "concurrent models").with_limits(2, Some(9), None);
 
     let handle = harness.engine.start(turn).await.unwrap();
     let run = harness.wait_terminal(handle.run_id).await;

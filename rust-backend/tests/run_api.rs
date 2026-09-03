@@ -15,7 +15,7 @@ use uuid::Uuid;
 use writing_coach_server::{
     AppConfig, AppState,
     agent::{AgentAnswer, AgentProgram, RunContext, RunEngine, UserTurn},
-    config::{ModelConfig, RunDefaults},
+    config::{ModelConfig, RunDefaults, SecurityConfig},
     domain::{RunId, RunStatus},
     llm::{GenaiModelGateway, ModelSettingsStore},
     store::{
@@ -39,6 +39,7 @@ type ExportMutation<'a> = Box<dyn Fn(&mut Value) + 'a>;
 struct Harness {
     app: Router,
     database_path: PathBuf,
+    student_token: String,
 }
 
 struct ControlledHarness {
@@ -135,6 +136,7 @@ impl ControlledHarness {
             pool,
             run_engine: engine.clone(),
             model_settings: settings,
+            security: Arc::new(SecurityConfig::default()),
         };
         Self {
             app: writing_coach_server::api::router(state),
@@ -198,6 +200,11 @@ bind_addr = "127.0.0.1:0"
 database_url = {database_url:?}
 skill_root = {skill_root:?}
 corpus_root = {corpus_root:?}
+cors_allowed_origins = ["https://student.example", "https://teacher.example"]
+
+[security]
+teacher_access_token = "teacher-secret"
+student_token_pepper = "test-student-pepper"
 
 [model]
 provider = "openai-compatible"
@@ -221,7 +228,19 @@ max_cost_microusd = 5000000
         let mut config = AppConfig::from_toml(&source).unwrap();
         config.database_url = database_url;
         let app = writing_coach_server::build_app(config).await.unwrap();
-        Self { app, database_path }
+        let (status, access) = request_json(
+            app.clone(),
+            Method::POST,
+            "/api/student/access/bootstrap",
+            json!({"student_name":"测试学生","student_id":"harness-student"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        Self {
+            app,
+            database_path,
+            student_token: access["access_token"].as_str().unwrap().to_owned(),
+        }
     }
 
     async fn request(
@@ -253,6 +272,10 @@ max_cost_microusd = 5000000
     async fn json(&self, method: Method, uri: &str, payload: Value) -> (StatusCode, Value) {
         let mut headers = HeaderMap::new();
         headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {}", self.student_token)).unwrap(),
+        );
+        headers.insert(
             header::CONTENT_TYPE,
             HeaderValue::from_static("application/json"),
         );
@@ -265,11 +288,38 @@ max_cost_microusd = 5000000
     }
 
     async fn get_json(&self, uri: &str) -> (StatusCode, Value) {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {}", self.student_token)).unwrap(),
+        );
+        let (status, _, body) = self.request(Method::GET, uri, headers, Body::empty()).await;
+        let body = serde_json::from_slice(&body).unwrap();
+        (status, body)
+    }
+
+    async fn anonymous_json(
+        &self,
+        method: Method,
+        uri: &str,
+        payload: Value,
+    ) -> (StatusCode, Value) {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        let (status, _, body) = self
+            .request(method, uri, headers, Body::from(payload.to_string()))
+            .await;
+        (status, serde_json::from_slice(&body).unwrap())
+    }
+
+    async fn anonymous_get_json(&self, uri: &str) -> (StatusCode, Value) {
         let (status, _, body) = self
             .request(Method::GET, uri, HeaderMap::new(), Body::empty())
             .await;
-        let body = serde_json::from_slice(&body).unwrap();
-        (status, body)
+        (status, serde_json::from_slice(&body).unwrap())
     }
 
     async fn create_completed_run(&self) -> Value {
@@ -364,7 +414,7 @@ async fn python_frontend_compatibility_routers_are_available_and_student_scoped(
 
     let boundary = "rust-python-parity-boundary";
     let multipart = format!(
-        "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"notes.md\"\r\nContent-Type: text/markdown\r\n\r\n# 访谈材料\r\n一个具体观察。\r\n--{boundary}--\r\n"
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"notes.md\"\r\nContent-Type: application/octet-stream\r\n\r\n# 访谈材料\r\n一个具体观察。\r\n--{boundary}--\r\n"
     );
     let mut upload_headers = headers.clone();
     upload_headers.insert(
@@ -382,6 +432,7 @@ async fn python_frontend_compatibility_routers_are_available_and_student_scoped(
     assert_eq!(status, StatusCode::CREATED);
     let uploaded: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(uploaded["filename"], "notes.md");
+    assert_eq!(uploaded["content_type"], "text/markdown");
     assert!(
         uploaded["parsed_text"]
             .as_str()
@@ -397,7 +448,20 @@ async fn python_frontend_compatibility_routers_are_available_and_student_scoped(
             .is_some_and(|items| items.len() >= 10)
     );
 
-    let (status, stats) = app.get_json("/api/teacher/stats").await;
+    let mut teacher_headers = HeaderMap::new();
+    teacher_headers.insert(
+        "x-teacher-token",
+        HeaderValue::from_static("teacher-secret"),
+    );
+    let (status, _, body) = app
+        .request(
+            Method::GET,
+            "/api/teacher/stats",
+            teacher_headers.clone(),
+            Body::empty(),
+        )
+        .await;
+    let stats: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(status, StatusCode::OK);
     assert_eq!(stats["total_sessions"], 1);
     assert!(stats["question_topics"].is_array());
@@ -408,7 +472,10 @@ async fn python_frontend_compatibility_routers_are_available_and_student_scoped(
         "/api/teacher/class-summary",
         "/api/teacher/pre-conference",
     ] {
-        let (status, body) = app.get_json(path).await;
+        let (status, _, bytes) = app
+            .request(Method::GET, path, teacher_headers.clone(), Body::empty())
+            .await;
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(status, StatusCode::OK, "path={path}; body={body}");
     }
 
@@ -418,6 +485,10 @@ async fn python_frontend_compatibility_routers_are_available_and_student_scoped(
         "--{import_boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"sample.json\"\r\nContent-Type: application/json\r\n\r\n{fixture}\r\n--{import_boundary}--\r\n"
     );
     let mut import_headers = HeaderMap::new();
+    import_headers.insert(
+        "x-teacher-token",
+        HeaderValue::from_static("teacher-secret"),
+    );
     import_headers.insert(
         header::CONTENT_TYPE,
         HeaderValue::from_str(&format!("multipart/form-data; boundary={import_boundary}")).unwrap(),
@@ -438,6 +509,182 @@ async fn python_frontend_compatibility_routers_are_available_and_student_scoped(
             .as_array()
             .is_some_and(|items| !items.is_empty())
     );
+}
+
+#[tokio::test]
+async fn python_student_routes_require_bearer_and_prevent_cross_student_access() {
+    let app = Harness::new().await;
+
+    let (status, _) = app.anonymous_get_json("/api/sessions").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = app
+        .anonymous_json(
+            Method::POST,
+            "/api/chat",
+            json!({"message":"形成思路", "response_mode":"synthesize"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let (_, access_a) = app
+        .json(
+            Method::POST,
+            "/api/student/access/bootstrap",
+            json!({"student_name":"李捷铭","student_id":"2025010468"}),
+        )
+        .await;
+    let (_, access_b) = app
+        .json(
+            Method::POST,
+            "/api/student/access/bootstrap",
+            json!({"student_name":"张弛衡","student_id":"2025010341"}),
+        )
+        .await;
+    let bearer = |token: &str| {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+        );
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        headers
+    };
+    let token_a = access_a["access_token"].as_str().unwrap();
+    let token_b = access_b["access_token"].as_str().unwrap();
+
+    let (status, _, body) = app
+        .request(
+            Method::POST,
+            "/api/sessions",
+            bearer(token_a),
+            Body::from("{}"),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let created: Value = serde_json::from_slice(&body).unwrap();
+    let session_id = created["session_id"].as_str().unwrap();
+
+    let (status, _, _) = app
+        .request(
+            Method::GET,
+            &format!("/api/sessions/{session_id}"),
+            bearer(token_b),
+            Body::empty(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, _, body) = app
+        .request(
+            Method::POST,
+            "/api/chat",
+            bearer(token_a),
+            Body::from(
+                json!({
+                    "session_id": session_id,
+                    "student_name": "伪造姓名",
+                    "student_id": "0000000000",
+                    "message": "形成思路",
+                    "response_mode": "synthesize"
+                })
+                .to_string(),
+            ),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let response: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(response["metadata"]["response_mode"], "synthesize");
+    assert_eq!(response["metadata"]["action"], "synthesize");
+    assert_eq!(response["awaiting_slots"], json!([]));
+
+    let (status, _, body) = app
+        .request(Method::GET, "/api/sessions", bearer(token_a), Body::empty())
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let sessions: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(sessions["sessions"].as_array().unwrap().len(), 1);
+    assert_eq!(sessions["sessions"][0]["user_id"], "2025010468");
+}
+
+#[tokio::test]
+async fn teacher_skill_controls_and_cross_origin_preflight_match_the_two_frontends() {
+    let app = Harness::new().await;
+
+    let (status, _) = app.get_json("/api/skills/socratic_review").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = app
+        .json(Method::POST, "/api/skills/reload", json!({}))
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let mut teacher_headers = HeaderMap::new();
+    teacher_headers.insert(
+        "x-teacher-token",
+        HeaderValue::from_static("teacher-secret"),
+    );
+    let (status, _, _) = app
+        .request(
+            Method::GET,
+            "/api/skills/socratic_review",
+            teacher_headers,
+            Body::empty(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _, _) = app
+        .request(
+            Method::GET,
+            "/api/teacher/stats?teacher_token=teacher-secret",
+            HeaderMap::new(),
+            Body::empty(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let mut preflight_headers = HeaderMap::new();
+    preflight_headers.insert(
+        header::ORIGIN,
+        HeaderValue::from_static("https://student.example"),
+    );
+    preflight_headers.insert(
+        header::ACCESS_CONTROL_REQUEST_METHOD,
+        HeaderValue::from_static("DELETE"),
+    );
+    preflight_headers.insert(
+        header::ACCESS_CONTROL_REQUEST_HEADERS,
+        HeaderValue::from_static("authorization,x-teacher-token,content-type"),
+    );
+    let (status, headers, _) = app
+        .request(
+            Method::OPTIONS,
+            "/api/sessions",
+            preflight_headers,
+            Body::empty(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).unwrap(),
+        "https://student.example"
+    );
+    let allowed_methods = headers
+        .get(header::ACCESS_CONTROL_ALLOW_METHODS)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_ascii_lowercase();
+    assert!(allowed_methods.contains("delete"));
+    let allowed_headers = headers
+        .get(header::ACCESS_CONTROL_ALLOW_HEADERS)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_ascii_lowercase();
+    assert!(allowed_headers.contains("authorization"));
+    assert!(allowed_headers.contains("x-teacher-token"));
 }
 
 #[tokio::test]
@@ -491,7 +738,13 @@ async fn synchronous_chat_exposes_the_synthesize_action_contract() {
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(synthesis["metadata"]["action"], "synthesize");
-    assert!(synthesis["reply"].as_str().unwrap().contains("## 论证路径"));
+    let reply = synthesis["reply"].as_str().unwrap();
+    for heading in ["## 选题定位", "## 核心问题", "## 文章结构", "## 下一步"] {
+        assert!(
+            reply.contains(heading),
+            "missing synthesis heading: {heading}"
+        );
+    }
     assert_eq!(synthesis["awaiting_slots"], json!([]));
     let run_id = synthesis["metadata"]["run_id"].as_str().unwrap();
     let (status, run) = app.get_json(&format!("/api/runs/{run_id}")).await;
@@ -673,6 +926,10 @@ async fn json_request_rejections_are_fixed_safe_json_across_task_ten_routes() {
             header::CONTENT_TYPE,
             HeaderValue::from_static("application/json"),
         );
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {}", app.student_token)).unwrap(),
+        );
         let (status, _, body) = app
             .request(
                 method,
@@ -725,14 +982,24 @@ async fn json_request_rejections_are_fixed_safe_json_across_task_ten_routes() {
 async fn wait_style_chat_maps_cancelled_terminal_state_deliberately() {
     // Break caught: non-completed chat terminals collapse into a misleading generic 400.
     let app = ControlledHarness::new(0).await;
+    let (_, access) = request_json(
+        app.app.clone(),
+        Method::POST,
+        "/api/student/access/bootstrap",
+        json!({"student_name":"测试学生","student_id":"controlled-student"}),
+    )
+    .await;
+    let token = access["access_token"].as_str().unwrap().to_owned();
     let chat = tokio::spawn({
         let router = app.app.clone();
+        let token = token.clone();
         async move {
-            request_json(
+            request_json_authenticated(
                 router,
                 Method::POST,
                 "/api/chat",
                 json!({"message": "controlled"}),
+                &token,
             )
             .await
         }
@@ -807,8 +1074,8 @@ async fn wait_style_chat_returns_legacy_shape_from_the_one_persisted_run() {
 }
 
 #[tokio::test]
-async fn chat_preserves_legacy_identity_updates_on_an_existing_session() {
-    // Break caught: an existing-session chat stores the profile but leaves session filtering on the old ID.
+async fn chat_uses_authenticated_identity_and_ignores_spoofed_payload_identity() {
+    // Break caught: request-body identity overrides the authenticated student principal.
     let app = Harness::new().await;
     let (_, first) = app
         .json(
@@ -832,10 +1099,12 @@ async fn chat_preserves_legacy_identity_updates_on_an_existing_session() {
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(second["session_id"], session_id);
-    let (_, filtered) = app.get_json("/api/sessions?user_id=new-id").await;
+    let (_, spoofed) = app.get_json("/api/sessions?user_id=new-id").await;
+    assert!(spoofed["sessions"].as_array().unwrap().is_empty());
+    let (_, filtered) = app.get_json("/api/sessions?user_id=harness-student").await;
     assert_eq!(filtered["sessions"].as_array().unwrap().len(), 1);
-    assert_eq!(filtered["sessions"][0]["student_name"], "新名");
-    assert_eq!(filtered["sessions"][0]["student_id"], "new-id");
+    assert_eq!(filtered["sessions"][0]["student_name"], "测试学生");
+    assert_eq!(filtered["sessions"][0]["student_id"], "harness-student");
 }
 
 #[tokio::test]
@@ -994,9 +1263,11 @@ async fn session_transfer_round_trips_the_full_trajectory_with_new_foreign_keys(
         "INSERT INTO model_calls (id, run_id, purpose, provider, model, input_tokens, output_tokens, \
          input_price_microusd_per_million, output_price_microusd_per_million, cost_microusd, \
          duration_ms, finish_reason, response_id, created_at) \
-         VALUES (?, ?, 'answer', 'fake', 'fixture', 3, 2, 10, 20, 2, 1, 'stop', 'response-1', CURRENT_TIMESTAMP)",
+         VALUES (?, ?, 'answer', 'fake', 'fixture', 3, 2, 10, 20, 2, 1, 'stop', 'response-1', \
+         (SELECT finished_at FROM agent_runs WHERE id = ?))",
     )
     .bind(Uuid::new_v4().simple().to_string())
+    .bind(run_id)
     .bind(run_id)
     .execute(&pool)
     .await
@@ -1101,9 +1372,11 @@ async fn transfer_recomputes_each_model_cost_and_matches_call_sums_to_run_totals
         "INSERT INTO model_calls (id, run_id, purpose, provider, model, input_tokens, output_tokens, \
          input_price_microusd_per_million, output_price_microusd_per_million, cost_microusd, \
          duration_ms, finish_reason, response_id, created_at) \
-         VALUES (?, ?, 'answer', 'fake', 'fixture', 3, 2, 10, 20, 2, 1, 'stop', 'response-1', CURRENT_TIMESTAMP)",
+         VALUES (?, ?, 'answer', 'fake', 'fixture', 3, 2, 10, 20, 2, 1, 'stop', 'response-1', \
+         (SELECT finished_at FROM agent_runs WHERE id = ?))",
     )
     .bind(Uuid::new_v4().simple().to_string())
+    .bind(run_id)
     .bind(run_id)
     .execute(&pool)
     .await
@@ -1389,6 +1662,10 @@ async fn invalid_duplicate_and_oversize_imports_fail_without_partial_sessions() 
         header::CONTENT_TYPE,
         HeaderValue::from_static("application/json"),
     );
+    headers.insert(
+        header::AUTHORIZATION,
+        HeaderValue::from_str(&format!("Bearer {}", app.student_token)).unwrap(),
+    );
     let (status, _, _) = app
         .request(
             Method::POST,
@@ -1526,6 +1803,7 @@ async fn lagged_sse_reload_database_failure_terminates_without_delivering_a_high
         pool: pool.clone(),
         run_engine: engine,
         model_settings: settings,
+        security: Arc::new(SecurityConfig::default()),
     });
     let (_, created) = request_json(
         app.clone(),
@@ -1731,6 +2009,34 @@ async fn request_json(
                 .method(method)
                 .uri(uri)
                 .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = timeout(WAIT, response.into_body().collect())
+        .await
+        .expect("JSON response terminates")
+        .unwrap()
+        .to_bytes();
+    (status, serde_json::from_slice(&body).unwrap())
+}
+
+async fn request_json_authenticated(
+    app: Router,
+    method: Method,
+    uri: &str,
+    payload: Value,
+    token: &str,
+) -> (StatusCode, Value) {
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
                 .body(Body::from(payload.to_string()))
                 .unwrap(),
         )

@@ -9,6 +9,14 @@ import {
 import { agentApiUrl, normalizeAgentApiBase } from "./api-base.mjs";
 
 const agentApiBase = normalizeAgentApiBase(import.meta.env?.VITE_AGENT_API_BASE_URL || "");
+export const studentAccessStorageKey = "writingCoach.studentAccess";
+
+export type StudentAccess = {
+  access_token: string;
+  principal_id: string;
+  student_name: string;
+  student_id: string;
+};
 
 function studentApiUrl(path: string) {
   return agentApiUrl(path, agentApiBase);
@@ -99,6 +107,62 @@ export type RunEventOptions = {
 };
 
 type Fetcher = typeof fetch;
+
+export async function bootstrapStudentAccess(
+  studentName: string,
+  studentId: string,
+  fetcher: Fetcher = fetch
+): Promise<StudentAccess> {
+  const response = await fetcher(studentApiUrl("/api/student/access/bootstrap"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ student_name: studentName, student_id: studentId })
+  });
+  if (!response.ok) throw new Error("学生身份凭据创建失败。");
+  const access = await response.json() as StudentAccess;
+  if (!access.access_token || !access.student_id || !access.student_name) {
+    throw new Error("学生身份凭据无效。");
+  }
+  window.localStorage.setItem(studentAccessStorageKey, JSON.stringify(access));
+  return access;
+}
+
+export function hasStudentAccess(): boolean {
+  return readStudentAccess() !== null;
+}
+
+export function clearStudentAccess(): void {
+  window.localStorage.removeItem(studentAccessStorageKey);
+}
+
+function readStudentAccess(): StudentAccess | null {
+  try {
+    const raw = window.localStorage.getItem(studentAccessStorageKey);
+    if (!raw) return null;
+    const value = JSON.parse(raw) as Partial<StudentAccess>;
+    return typeof value.access_token === "string" && value.access_token.length > 0
+      && typeof value.student_id === "string" && value.student_id.length > 0
+      && typeof value.student_name === "string" && value.student_name.length > 0
+      ? value as StudentAccess
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+async function studentFetch(url: string, init: RequestInit = {}, fetcher: Fetcher = fetch): Promise<Response> {
+  const normalizedHeaders = new Headers(init.headers);
+  const access = readStudentAccess();
+  if (access) normalizedHeaders.set("Authorization", `Bearer ${access.access_token}`);
+  const headers: Record<string, string> = {};
+  normalizedHeaders.forEach((value, key) => { headers[key] = value; });
+  const response = await fetcher(url, { ...init, headers });
+  if (response.status === 401) {
+    clearStudentAccess();
+    window.dispatchEvent(new Event("writing-coach:student-auth-invalid"));
+  }
+  return response;
+}
 
 const runEventKinds = [
   "run.started",
@@ -456,7 +520,7 @@ async function requestJson<T>(
   fallbackMessage: string,
   fetcher: Fetcher = fetch
 ): Promise<T> {
-  const response = await fetcher(url, init);
+  const response = await studentFetch(url, init, fetcher);
   if (!response.ok) {
     let message = fallbackMessage;
     try {
@@ -514,9 +578,10 @@ export async function sendChat(payload: {
   student_name?: string | null;
   student_id?: string | null;
   message: string;
+  response_mode?: "chat" | "synthesize";
   enable_web_search?: boolean;
 }): Promise<ChatResponse> {
-  const response = await fetch(studentApiUrl("/api/chat"), {
+  const response = await studentFetch(studentApiUrl("/api/chat"), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload)
@@ -527,7 +592,7 @@ export async function sendChat(payload: {
 
 export async function fetchSessions(userId?: string | null): Promise<{ sessions: SessionSummary[] }> {
   const query = userId ? `?user_id=${encodeURIComponent(userId)}` : "";
-  const response = await fetch(studentApiUrl(`/api/sessions${query}`));
+  const response = await studentFetch(studentApiUrl(`/api/sessions${query}`));
   if (!response.ok) throw new Error(await response.text());
   return response.json();
 }
@@ -535,7 +600,7 @@ export async function fetchSessions(userId?: string | null): Promise<{ sessions:
 export async function fetchSessionMessages(
   sessionId: string
 ): Promise<{ messages: HistoryMessage[] }> {
-  const response = await fetch(studentApiUrl(`/api/sessions/${sessionId}/messages`));
+  const response = await studentFetch(studentApiUrl(`/api/sessions/${sessionId}/messages`));
   if (!response.ok) throw new Error(await response.text());
   return response.json();
 }

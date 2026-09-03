@@ -3,13 +3,16 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   SessionSummary,
+  bootstrapStudentAccess,
   cancelRun,
+  clearStudentAccess,
   createRun,
   downloadSessionExport,
   exportSession,
   fetchSessionMessages,
   fetchSessions,
   getRun,
+  hasStudentAccess,
   importSession,
   readSessionImportFile,
   subscribeRunEvents,
@@ -48,7 +51,8 @@ type StudentProfile = {
 
 export function StudentChat() {
   const [savedProfile] = useState<StudentProfile | null>(readSavedProfile);
-  const initialStudentId = savedProfile?.studentId || "";
+  const savedAccessValid = Boolean(savedProfile && hasStudentAccess());
+  const initialStudentId = savedAccessValid ? savedProfile?.studentId || "" : "";
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [history, setHistory] = useState<SessionSummary[]>([]);
   const [historyError, setHistoryError] = useState("");
@@ -58,9 +62,9 @@ export function StudentChat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [webSearchEnabled, setWebSearchEnabled] = useState(false);
-  const [studentName, setStudentName] = useState(savedProfile?.name || "");
+  const [studentName, setStudentName] = useState(savedAccessValid ? savedProfile?.name || "" : "");
   const [studentId, setStudentId] = useState(initialStudentId);
-  const [profileConfirmed, setProfileConfirmed] = useState(Boolean(savedProfile));
+  const [profileConfirmed, setProfileConfirmed] = useState(savedAccessValid);
   const [profileError, setProfileError] = useState("");
   const [runId, setRunId] = useState<string | null>(null);
   const [importedRunIds, setImportedRunIds] = useState<string[]>([]);
@@ -97,6 +101,22 @@ export function StudentChat() {
       subscriptionRef.current?.close();
       subscriptionRef.current = null;
     };
+  }, []);
+
+  useEffect(() => {
+    function invalidateStudentAccess() {
+      resetRunUi();
+      window.localStorage.removeItem(studentProfileStorageKey);
+      setStudentName("");
+      setStudentId("");
+      setProfileConfirmed(false);
+      setProfileError("登录凭据已失效，请重新确认身份。");
+      setSessionId(null);
+      setHistory([]);
+      setMessages([]);
+    }
+    window.addEventListener("writing-coach:student-auth-invalid", invalidateStudentAccess);
+    return () => window.removeEventListener("writing-coach:student-auth-invalid", invalidateStudentAccess);
   }, []);
 
   useEffect(() => {
@@ -485,26 +505,32 @@ export function StudentChat() {
     }
   }
 
-  function confirmProfile(event?: FormEvent) {
+  async function confirmProfile(event?: FormEvent) {
     event?.preventDefault();
     const profile = normalizeStudentProfile(studentName, studentId);
     if (!profile) {
       setProfileError("请填写姓名和学号。");
-      return null;
+      return;
     }
-    window.localStorage.setItem(studentProfileStorageKey, JSON.stringify(profile));
-    setStudentName(profile.name);
-    setStudentId(profile.studentId);
-    setProfileConfirmed(true);
-    setProfileError("");
-    void loadHistory(profile.studentId);
-    requestAnimationFrame(() => composerRef.current?.focus());
-    return profile;
+    try {
+      await bootstrapStudentAccess(profile.name, profile.studentId);
+      window.localStorage.setItem(studentProfileStorageKey, JSON.stringify(profile));
+      setStudentName(profile.name);
+      setStudentId(profile.studentId);
+      setProfileConfirmed(true);
+      setProfileError("");
+      void loadHistory(profile.studentId);
+      requestAnimationFrame(() => composerRef.current?.focus());
+    } catch (error) {
+      clearStudentAccess();
+      setProfileError(error instanceof Error ? error.message : "无法确认学生身份。");
+    }
   }
 
   function switchStudent() {
     if (busy) return;
     resetRunUi();
+    clearStudentAccess();
     window.localStorage.removeItem(studentProfileStorageKey);
     setStudentName("");
     setStudentId("");

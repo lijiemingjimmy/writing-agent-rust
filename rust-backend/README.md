@@ -47,8 +47,30 @@ Run 终态为 `completed`、`cancelled`、`budget_exceeded` 或 `failed`。每�
 
 不要把 `database_url` 指向任何其他项目或真实用户数据库。课程演示使用新数据库或测试创建的临时数据库。
 
-学生凭证使用随机 256-bit token；SQLite 只保存 SHA-256 摘要。设置环境变量
-`WRITING_COACH_TEACHER_TOKEN` 后，教师端请求必须携带同值的 `x-teacher-token`。
+学生凭证使用随机 256-bit token；SQLite 只保存使用 `security.student_token_pepper`
+计算的 HMAC-SHA256 摘要。学生数据接口要求 `Authorization: Bearer <token>`，并按
+principal 校验会话归属。教师端在私有运行配置中设置 `security.teacher_access_token`
+后，请求必须通过 `x-teacher-token` 请求头或 `teacher_token` 查询参数携带同值。
+
+`conversation_context_max_chars` 默认为 24,000，未超过时保留同一会话全部消息；
+超过后保留首条用户消息、`conversation_context_recent_chars` 指定的最近窗口、已确认事实
+和持久摘要。“形成思路”使用同一上下文调用模型收束；模型供应商错误时才使用确定性降级。
+
+## macOS 常驻运行
+
+先编译 release 二进制并准备仅属于本 Rust 项目的配置与数据库目录，然后执行 dry-run：
+
+```bash
+DRY_RUN=1 scripts/install-launchd.sh \
+  --label edu.example.wam \
+  --binary /absolute/path/writing-coach-server \
+  --config /absolute/path/config.toml \
+  --workdir /absolute/path/project \
+  --log-dir /absolute/path/logs
+```
+
+确认输出后去掉 `DRY_RUN=1` 才会写入用户 LaunchAgents 并启动服务。健康检查脚本只接受
+回环地址；卸载脚本会停止服务并把 plist 移到废纸篓，不直接删除。
 
 ## 测试
 

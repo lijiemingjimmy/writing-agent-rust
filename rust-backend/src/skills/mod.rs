@@ -6,6 +6,7 @@ mod router;
 mod slot_filler;
 mod thinking_flow;
 
+pub use branch_controller::{BranchController, BranchResolution};
 pub use knowledge_decision::{KnowledgeDecision, build_knowledge_decision_prompt};
 pub use material_search::{MaterialSearchPlan, MaterialSearchService};
 pub use prompt::{
@@ -17,3 +18,4 @@ pub use registry::{GlobalPolicy, SkillDefinition, SkillRegistry};
 pub use router::SkillRouter;
 pub use slot_filler::SlotFiller;
 pub use thinking_flow::{FlowDecision, PromptKind, ThinkingFlowController};
+mod branch_controller;

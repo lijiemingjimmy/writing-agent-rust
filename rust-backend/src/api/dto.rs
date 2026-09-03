@@ -11,8 +11,16 @@ pub struct RunRequest {
     pub student_id: Option<String>,
     pub message: String,
     pub action: Option<TurnAction>,
+    pub response_mode: Option<ResponseMode>,
     #[serde(default)]
     pub enable_web_search: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ResponseMode {
+    Chat,
+    Synthesize,
 }
 
 #[derive(Serialize)]

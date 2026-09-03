@@ -397,10 +397,27 @@ fn estimate_prompt_tokens(request: &ModelRequest) -> Result<u64, AppError> {
                 AppError::InvalidRun("model request token estimate overflowed".to_owned())
             })?,
         |total, message| {
-            let utf8_bytes = u64::try_from(message.content.len()).map_err(|_| {
-                AppError::InvalidRun("model request content is too large".to_owned())
-            })?;
-            total.checked_add(utf8_bytes).ok_or_else(|| {
+            let mut ascii = 0u64;
+            let mut non_ascii = 0u64;
+            for character in message.content.chars() {
+                if character.is_ascii() {
+                    ascii = ascii.checked_add(1).ok_or_else(|| {
+                        AppError::InvalidRun("model request content is too large".to_owned())
+                    })?;
+                } else {
+                    non_ascii = non_ascii.checked_add(1).ok_or_else(|| {
+                        AppError::InvalidRun("model request content is too large".to_owned())
+                    })?;
+                }
+            }
+            let text_tokens = ascii
+                .checked_add(3)
+                .map(|value| value / 4)
+                .and_then(|value| value.checked_add(non_ascii))
+                .ok_or_else(|| {
+                    AppError::InvalidRun("model request token estimate overflowed".to_owned())
+                })?;
+            total.checked_add(text_tokens).ok_or_else(|| {
                 AppError::InvalidRun("model request token estimate overflowed".to_owned())
             })
         },

@@ -64,3 +64,15 @@ test("offers an explicit synthesis action instead of pretending the button is a 
   assert.match(source, /if \(!options\.action\)/);
   assert.match(source, /metadata_json\.action === "synthesize"/);
 });
+
+test("bootstraps a student bearer credential and clears it on invalidation or switching", async () => {
+  const source = await readFile(studentChatPath, "utf8");
+  const api = await readFile(new URL("../src/api.ts", import.meta.url), "utf8");
+
+  assert.match(source, /await bootstrapStudentAccess\(profile\.name, profile\.studentId\)/);
+  assert.match(source, /clearStudentAccess\(\)/);
+  assert.match(api, /\/api\/student\/access\/bootstrap/);
+  assert.match(api, /Authorization.*Bearer/);
+  assert.match(api, /response\.status === 401/);
+  assert.match(api, /writing-coach:student-auth-invalid/);
+});

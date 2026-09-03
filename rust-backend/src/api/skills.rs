@@ -2,12 +2,17 @@ use std::path::PathBuf;
 
 use axum::{
     Json, Router,
-    extract::Path,
+    extract::{Path, State},
+    http::{HeaderMap, Uri},
     routing::{get, post},
 };
 use serde_json::{Value, json};
 
-use crate::{AppState, api::ApiError, skills::SkillRegistry};
+use crate::{
+    AppState,
+    api::{ApiError, auth::require_teacher},
+    skills::SkillRegistry,
+};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -35,7 +40,13 @@ async fn list_skills() -> Result<Json<Value>, ApiError> {
     ))
 }
 
-async fn get_skill(Path(skill_id): Path<String>) -> Result<Json<Value>, ApiError> {
+async fn get_skill(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Path(skill_id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    require_teacher(&state, &headers, &uri)?;
     let registry = load_registry()?;
     let skill = registry
         .get(&skill_id)
@@ -43,7 +54,12 @@ async fn get_skill(Path(skill_id): Path<String>) -> Result<Json<Value>, ApiError
     Ok(Json(json!({"skill": public_skill(skill)})))
 }
 
-async fn reload_skills() -> Result<Json<Value>, ApiError> {
+async fn reload_skills(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> Result<Json<Value>, ApiError> {
+    require_teacher(&state, &headers, &uri)?;
     let registry = load_registry()?;
     Ok(Json(json!({"count": registry.all().len()})))
 }

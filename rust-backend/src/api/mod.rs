@@ -12,6 +12,7 @@ use axum::{
     Json, Router,
     extract::rejection::JsonRejection,
     http::StatusCode,
+    middleware,
     response::{IntoResponse, Response},
     routing::post,
 };
@@ -20,6 +21,10 @@ use serde_json::json;
 use crate::{AppError, AppState};
 
 pub fn router(state: AppState) -> Router {
+    let teacher_router = teacher::router().route_layer(middleware::from_fn_with_state(
+        state.clone(),
+        auth::teacher_guard,
+    ));
     Router::new()
         .route("/api/chat", post(runs::chat))
         .nest("/api/student/access", student_access::router())
@@ -27,7 +32,7 @@ pub fn router(state: AppState) -> Router {
         .nest("/api/sessions", sessions::router())
         .nest("/api/settings", settings::router())
         .nest("/api/skills", skills::router())
-        .nest("/api/teacher", teacher::router())
+        .nest("/api/teacher", teacher_router)
         .with_state(state)
 }
 

@@ -91,6 +91,9 @@ impl SkillRouter {
         if is_topic_refinement_request(text) {
             return self.registry.get("socratic_review");
         }
+        if is_contextual_topic_exploration(text, &input.context_text.to_lowercase()) {
+            return self.registry.get("socratic_review");
+        }
         if let Some(skill) = self.high_frequency_skill(text) {
             return Some(skill);
         }
@@ -574,6 +577,42 @@ fn is_topic_refinement_request(text: &str) -> bool {
                 "怎么展开",
             ],
         )
+}
+
+fn is_contextual_topic_exploration(text: &str, context_text: &str) -> bool {
+    if is_material_search_request(text)
+        || is_direct_evaluation_or_theory_request(text)
+        || has_any(text, &["ppt", "课件", "是什么意思", "怎么理解"])
+    {
+        return false;
+    }
+    if has_any(
+        text,
+        &[
+            "我想写",
+            "想要写",
+            "准备写",
+            "打算写",
+            "我想研究",
+            "我想讨论",
+        ],
+    ) || (text.contains("感兴趣") && text.chars().count() >= 8)
+    {
+        return true;
+    }
+    has_any(
+        text,
+        &[
+            "存在一些问题",
+            "存在问题",
+            "有些问题",
+            "好像有问题",
+            "感觉不太对",
+        ],
+    ) && has_any(
+        context_text,
+        &["感兴趣", "想写", "研究", "讨论", "问题", "方向"],
+    )
 }
 fn is_socratic_thinking_request(text: &str) -> bool {
     !has_any(text, &["ppt", "课件", "概念", "是什么意思", "怎么理解"])

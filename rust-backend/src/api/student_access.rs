@@ -23,9 +23,12 @@ async fn bootstrap(
     if name.is_empty() || student_id.is_empty() || name.len() > 255 || student_id.len() > 255 {
         return Err(ApiError::bad_request("student name and ID are required"));
     }
-    let (token, principal) = StudentAccessRepository::new(state.pool)
-        .bootstrap(name, student_id)
-        .await?;
+    let (token, principal) = StudentAccessRepository::with_pepper(
+        state.pool.clone(),
+        state.security.student_token_pepper.clone(),
+    )
+    .bootstrap(name, student_id)
+    .await?;
     Ok((
         StatusCode::CREATED,
         Json(json!({

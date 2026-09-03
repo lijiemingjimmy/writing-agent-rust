@@ -1,4 +1,5 @@
 mod conversation_memory;
+mod domain_boundary;
 mod input_safety;
 mod run_context;
 mod run_engine;
