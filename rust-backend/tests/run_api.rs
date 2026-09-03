@@ -320,6 +320,127 @@ impl Drop for Harness {
 }
 
 #[tokio::test]
+async fn python_frontend_compatibility_routers_are_available_and_student_scoped() {
+    let app = Harness::new().await;
+    let (status, access) = app
+        .json(
+            Method::POST,
+            "/api/student/access/bootstrap",
+            json!({"student_name":"李捷铭","student_id":"2025010468"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let token = access["access_token"].as_str().unwrap();
+    assert_eq!(access["student_id"], "2025010468");
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::AUTHORIZATION,
+        HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+    );
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    let (status, _, body) = app
+        .request(
+            Method::POST,
+            "/api/sessions",
+            headers.clone(),
+            Body::from("{}"),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let created: Value = serde_json::from_slice(&body).unwrap();
+    let session_id = created["session_id"].as_str().unwrap();
+
+    let (status, _, body) = app
+        .request(Method::GET, "/api/sessions", headers.clone(), Body::empty())
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let sessions: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(sessions["sessions"].as_array().unwrap().len(), 1);
+    assert_eq!(sessions["sessions"][0]["session_id"], session_id);
+
+    let boundary = "rust-python-parity-boundary";
+    let multipart = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"notes.md\"\r\nContent-Type: text/markdown\r\n\r\n# 访谈材料\r\n一个具体观察。\r\n--{boundary}--\r\n"
+    );
+    let mut upload_headers = headers.clone();
+    upload_headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_str(&format!("multipart/form-data; boundary={boundary}")).unwrap(),
+    );
+    let (status, _, body) = app
+        .request(
+            Method::POST,
+            &format!("/api/sessions/{session_id}/documents"),
+            upload_headers,
+            Body::from(multipart),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let uploaded: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(uploaded["filename"], "notes.md");
+    assert!(
+        uploaded["parsed_text"]
+            .as_str()
+            .unwrap()
+            .contains("访谈材料")
+    );
+
+    let (status, skills) = app.get_json("/api/skills").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        skills["skills"]
+            .as_array()
+            .is_some_and(|items| items.len() >= 10)
+    );
+
+    let (status, stats) = app.get_json("/api/teacher/stats").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(stats["total_sessions"], 1);
+    assert!(stats["question_topics"].is_array());
+
+    for path in [
+        "/api/teacher/students",
+        "/api/teacher/class-insights",
+        "/api/teacher/class-summary",
+        "/api/teacher/pre-conference",
+    ] {
+        let (status, body) = app.get_json(path).await;
+        assert_eq!(status, StatusCode::OK, "path={path}; body={body}");
+    }
+
+    let import_boundary = "teacher-import-boundary";
+    let fixture = r#"[{"conv_id":"a","role":"user","query":"我不知道写什么选题"},{"conv_id":"b","role":"user","query":"老师讲过 audience awareness 吗"},{"role":"assistant","content":"不应分析"}]"#;
+    let import_body = format!(
+        "--{import_boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"sample.json\"\r\nContent-Type: application/json\r\n\r\n{fixture}\r\n--{import_boundary}--\r\n"
+    );
+    let mut import_headers = HeaderMap::new();
+    import_headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_str(&format!("multipart/form-data; boundary={import_boundary}")).unwrap(),
+    );
+    let (status, _, body) = app
+        .request(
+            Method::POST,
+            "/api/teacher/analyze-upload",
+            import_headers,
+            Body::from(import_body),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let analysis: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(analysis["analyzed_questions"], 2);
+    assert!(
+        analysis["skill_counts"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+    );
+}
+
+#[tokio::test]
 async fn create_get_and_stream_run_progress_to_a_terminal_event() {
     // Break caught: the Run HTTP adapter is absent, blocks until completion, or leaves SSE open.
     let app = Harness::new().await;
@@ -703,7 +824,7 @@ async fn chat_preserves_legacy_identity_updates_on_an_existing_session() {
             "/api/chat",
             json!({
                 "session_id": session_id,
-                "message": "我没思路",
+                "message": "/ppt",
                 "user_id": "new-id",
                 "student_name": "新名"
             }),
@@ -837,7 +958,7 @@ async fn session_transfer_round_trips_the_full_trajectory_with_new_foreign_keys(
         .json(
             Method::POST,
             "/api/runs",
-            json!({"session_id": session_id, "message": "谢谢"}),
+            json!({"session_id": session_id, "message": "/ppt"}),
         )
         .await;
     assert_eq!(second_status, StatusCode::ACCEPTED);

@@ -21,6 +21,10 @@ pub enum PromptKind {
 pub struct FlowDecision {
     pub stage: FlowStage,
     pub prompt_kind: PromptKind,
+    pub required_action: String,
+    pub missing_slot: Option<String>,
+    pub allowed_response_kind: String,
+    pub selected_option: Option<String>,
     pub candidate_paths: Vec<CandidatePath>,
     pub missing_evidence: bool,
     pub ready_for_summary: bool,
@@ -35,84 +39,138 @@ impl ThinkingFlowController {
     }
 
     pub fn advance(&self, context: &WritingContext, message: &str) -> FlowDecision {
-        if context.motivation.is_none()
-            && context.observed_scene.is_none()
-            && context.evidence.is_empty()
-        {
-            return decision(
-                FlowStage::MotivationProbe,
-                PromptKind::MotivationProbe,
-                Vec::new(),
-            );
-        }
-
-        let has_direction = context.selected_direction.is_some() || context.selected_path.is_some();
-        let has_reason = context.choice_reason.is_some();
-        let has_evidence = !context.evidence.is_empty();
-        let prerequisites_complete = has_direction && has_reason && has_evidence;
-        if asks_for_summary(message) && prerequisites_complete {
+        if asks_for_summary(message) {
             return FlowDecision {
                 stage: FlowStage::SummaryReady,
                 prompt_kind: PromptKind::SummaryReady,
+                required_action: "build_summary".to_owned(),
+                missing_slot: None,
+                allowed_response_kind: "summary".to_owned(),
+                selected_option: None,
                 candidate_paths: context.candidate_paths.clone(),
                 missing_evidence: false,
                 ready_for_summary: true,
             };
         }
 
-        if has_direction {
-            if !has_reason {
-                return decision(
-                    FlowStage::ChoiceReflection,
-                    PromptKind::ChoiceReflection,
+        if let Some(selected) =
+            selected_option(message).filter(|_| !context.candidate_paths.is_empty())
+        {
+            return decision_with_contract(
+                FlowStage::ChoiceReflection,
+                PromptKind::ChoiceReflection,
+                "reflect_on_choice",
+                Some("choice_reason"),
+                "question",
+                Some(selected),
+                context.candidate_paths.clone(),
+            );
+        }
+
+        match current_stage(context) {
+            FlowStage::ChoiceReflection if has_choice_reason(message) => {
+                return decision_with_contract(
+                    FlowStage::EvidenceCheck,
+                    PromptKind::EvidenceCheck,
+                    "check_evidence",
+                    Some("evidence_or_counterexample"),
+                    "question",
+                    None,
                     context.candidate_paths.clone(),
                 );
             }
-            if !has_evidence {
+            FlowStage::ChoiceReflection => {
+                return decision_with_contract(
+                    FlowStage::ChoiceReflection,
+                    PromptKind::ChoiceReflection,
+                    "ask_choice_reason",
+                    Some("choice_reason"),
+                    "question",
+                    None,
+                    context.candidate_paths.clone(),
+                );
+            }
+            FlowStage::EvidenceCheck if has_evidence_or_counterexample(message) => {
+                return decision_with_contract(
+                    FlowStage::RefinedAdvice,
+                    PromptKind::RefinedAdvice,
+                    "give_refined_advice",
+                    None,
+                    "advice",
+                    None,
+                    context.candidate_paths.clone(),
+                );
+            }
+            FlowStage::EvidenceCheck => {
                 return FlowDecision {
                     stage: FlowStage::EvidenceCheck,
                     prompt_kind: PromptKind::EvidenceCheck,
+                    required_action: "ask_evidence".to_owned(),
+                    missing_slot: Some("evidence_or_counterexample".to_owned()),
+                    allowed_response_kind: "question".to_owned(),
+                    selected_option: None,
                     candidate_paths: context.candidate_paths.clone(),
                     missing_evidence: true,
                     ready_for_summary: false,
                 };
             }
-            return decision(
-                FlowStage::RefinedAdvice,
-                PromptKind::RefinedAdvice,
-                context.candidate_paths.clone(),
+            FlowStage::RefinedAdvice => {
+                return decision_with_contract(
+                    FlowStage::RefinedAdvice,
+                    PromptKind::RefinedAdvice,
+                    "give_refined_advice",
+                    None,
+                    "advice",
+                    None,
+                    context.candidate_paths.clone(),
+                );
+            }
+            _ => {}
+        }
+
+        if has_enough_for_candidates(context, message) {
+            return decision_with_contract(
+                FlowStage::CandidatePaths,
+                PromptKind::CandidatePaths,
+                "offer_candidate_paths",
+                Some("selected_path"),
+                "options",
+                None,
+                build_candidate_paths(context),
             );
         }
 
-        if !has_enough_for_candidates(context, message) {
-            return decision(
-                FlowStage::MotivationProbe,
-                PromptKind::MotivationProbe,
-                Vec::new(),
-            );
-        }
-
-        // Rebuild while the student is still exploring: a later turn can add a mechanism that
-        // makes a previously generic option set too coarse.
-        let candidate_paths = build_candidate_paths(context);
-        decision(
-            FlowStage::CandidatePaths,
-            PromptKind::CandidatePaths,
-            candidate_paths,
+        decision_with_contract(
+            FlowStage::MotivationProbe,
+            PromptKind::MotivationProbe,
+            "probe_motivation",
+            Some("motivation_or_scene"),
+            "question",
+            None,
+            Vec::new(),
         )
     }
 }
 
-fn decision(
+fn decision_with_contract(
     stage: FlowStage,
     prompt_kind: PromptKind,
+    required_action: &str,
+    missing_slot: Option<&str>,
+    allowed_response_kind: &str,
+    selected_option: Option<String>,
     candidate_paths: Vec<CandidatePath>,
 ) -> FlowDecision {
+    let missing_evidence = stage == FlowStage::EvidenceCheck && missing_slot.is_some();
     FlowDecision {
         stage,
         prompt_kind,
+        required_action: required_action.to_owned(),
+        missing_slot: missing_slot.map(str::to_owned),
+        allowed_response_kind: allowed_response_kind.to_owned(),
+        selected_option,
         candidate_paths,
-        missing_evidence: false,
+        missing_evidence,
         ready_for_summary: false,
     }
 }
@@ -123,7 +181,155 @@ fn asks_for_summary(message: &str) -> bool {
         .any(|marker| message.contains(marker))
 }
 
+fn current_stage(context: &WritingContext) -> FlowStage {
+    context
+        .flow_stage
+        .as_ref()
+        .or(context.thinking_stage.as_ref())
+        .filter(|stage| {
+            matches!(
+                stage,
+                FlowStage::MotivationProbe
+                    | FlowStage::CandidatePaths
+                    | FlowStage::ChoiceReflection
+                    | FlowStage::EvidenceCheck
+                    | FlowStage::RefinedAdvice
+                    | FlowStage::SummaryReady
+            )
+        })
+        .cloned()
+        .unwrap_or(FlowStage::MotivationProbe)
+}
+
+fn selected_option(text: &str) -> Option<String> {
+    let mut value = text.trim().to_lowercase();
+    for suffix in ["可以", "了", "吧"] {
+        if let Some(stripped) = value.strip_suffix(suffix) {
+            value = stripped.trim().to_owned();
+        }
+    }
+    for prefix in ["我选择", "我想选", "我选", "选择", "想选", "就", "要", "选"] {
+        if let Some(stripped) = value.strip_prefix(prefix) {
+            value = stripped.trim().to_owned();
+            break;
+        }
+    }
+    if let Some(stripped) = value
+        .strip_prefix("方向")
+        .or_else(|| value.strip_prefix("第"))
+    {
+        value = stripped.trim().to_owned();
+    }
+    for suffix in ["个方向", "号方向", "方向", "题目", "个", "号"] {
+        if let Some(stripped) = value.strip_suffix(suffix) {
+            value = stripped.trim().to_owned();
+            break;
+        }
+    }
+    match value.as_str() {
+        "1" | "一" => Some("1".to_owned()),
+        "2" | "二" => Some("2".to_owned()),
+        "3" | "三" => Some("3".to_owned()),
+        "4" | "四" => Some("4".to_owned()),
+        "5" | "五" => Some("5".to_owned()),
+        "6" | "六" => Some("6".to_owned()),
+        _ => None,
+    }
+}
+
+fn has_choice_reason(text: &str) -> bool {
+    selected_option(text).is_none()
+        && [
+            "因为",
+            "我选",
+            "选择",
+            "没选",
+            "不选",
+            "更适合",
+            "材料",
+            "感受",
+        ]
+        .iter()
+        .any(|marker| text.contains(marker))
+}
+
+fn has_evidence_or_counterexample(text: &str) -> bool {
+    [
+        "证据",
+        "例子",
+        "案例",
+        "访谈",
+        "材料",
+        "数据",
+        "经历",
+        "观察",
+        "反例",
+        "反方",
+        "反驳",
+        "相反",
+        "不一定",
+        "但是也可能",
+    ]
+    .iter()
+    .any(|marker| text.contains(marker))
+}
+
 fn build_candidate_paths(context: &WritingContext) -> Vec<CandidatePath> {
+    let task = context
+        .extra
+        .get("thinking_task")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("选题");
+    if task.contains("文献综述") {
+        return vec![
+            candidate(
+                "1",
+                "概念脉络",
+                "核心概念在不同研究里如何被界定、区分和使用？",
+                "适合用定义型文献、综述和课程概念。",
+                "容易变成概念罗列，需要比较不同定义的差异。",
+            ),
+            candidate(
+                "2",
+                "理论脉络",
+                "哪些理论解释了这个现象，它们各自能解释到哪里？",
+                "适合用经典理论、高被引论文和课程理论框架。",
+                "理论太多会散，需要选一个主入口。",
+            ),
+            candidate(
+                "3",
+                "方法脉络",
+                "现有研究分别用访谈、问卷、文本分析回答了什么？",
+                "适合比较实证研究的方法和样本。",
+                "不能只列方法，要说明方法限制了什么结论。",
+            ),
+        ];
+    }
+    if task.contains("修改") {
+        return vec![
+            candidate(
+                "1",
+                "核心论点优先",
+                "文章到底要让读者接受哪一个可争辩判断？",
+                "适合已有初稿但中心判断不清的情况。",
+                "只改句子不改判断，文章会继续散。",
+            ),
+            candidate(
+                "2",
+                "证据链优先",
+                "每个例子后是否解释了它证明什么？",
+                "适合材料多但论证跳跃的情况。",
+                "容易堆案例，需要补分析句。",
+            ),
+            candidate(
+                "3",
+                "结构功能优先",
+                "每段是否承担了清楚且不重复的功能？",
+                "适合段落重复、顺序混乱或过渡弱的初稿。",
+                "重排结构前要先保住核心论点。",
+            ),
+        ];
+    }
     let topic = [
         context.topic.as_deref(),
         context.initial_idea.as_deref(),
@@ -142,22 +348,22 @@ fn build_candidate_paths(context: &WritingContext) -> Vec<CandidatePath> {
             candidate(
                 "1",
                 "边界区分方向",
-                "学生如何区分两种关系，边界体现在哪些互动里？",
-                "适合用关系例子、访谈和概念定义。",
-                "不要只列概念，要比较场景、情感投入和责任期待。",
+                "大学生如何区分搭子和朋友，边界体现在哪些互动里？",
+                "适合用自己的关系例子、身边访谈、社交平台讨论和已有文献里的概念定义。",
+                "不要只写“搭子是什么、朋友是什么”，要比较活动场景、情感投入和责任期待。",
             ),
             candidate(
                 "2",
                 "功能替代方向",
-                "轻关系在替代传统关系的哪些功能，还是一种独立形式？",
-                "适合比较不同场景中的陪伴、信息交换和情绪支持。",
-                "需要锁定一两个具体功能，避免泛谈社交变化。",
+                "搭子是在替代朋友的某些功能，还是一种独立的轻关系？",
+                "适合比较饭搭子、学习搭子、运动搭子等不同场景，以及朋友在这些场景里的角色。",
+                "容易写成泛泛的青年社交变化，需要锁定一两个具体功能，比如陪伴、信息交换或情绪支持。",
             ),
             candidate(
                 "3",
                 "关系转化方向",
-                "什么条件下轻关系会变得更深，什么条件下保持原状？",
-                "适合比较发生转化和没有转化的经历或访谈。",
+                "什么条件下搭子会变成朋友，什么条件下只停留在搭子？",
+                "适合访谈有搭子经历的同学，或分析“搭子变朋友/没有变朋友”的帖子。",
                 "要解释转化条件，不能只讲有趣故事。",
             ),
         ];

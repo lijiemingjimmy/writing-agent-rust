@@ -1,0 +1,55 @@
+# Python 会话运行时完整等价设计
+
+## 目标
+
+以当前 `writing-coach-agent` 为行为基准，在独立 Rust 仓库中实现同等的学生会话运行时，以及当前学生端和教师端前端实际调用的 HTTP Router。
+
+这里的“完整”指学生在一次或多轮对话中可观察到的 Agent 行为完整，而不是复制 Python 技术栈。Rust 继续独立构建、独立存储、独立运行，不导入 Python 模块，也不读取原数据库或真实用户数据。
+
+## 保持不变的隔离边界
+
+- Rust 后端、SQLite、前端构建目录和 Git 仓库仍然完全独立。
+- 教师端兼容 API 只能分析 Rust 自己的新数据库；不复制旧部署工作流、GitHub Pages、Mac mini 配置或原数据库。
+- 不复制原学生案例和真实会话；课程语料只使用仓库内已经审定可交付的材料。
+- React 学生端协议保持兼容，本次不改视觉层。
+
+## 行为基准
+
+一次普通会话严格采用 Python 当前顺序：
+
+1. 读取并规范化会话状态与记忆。
+2. 安全分类；危险输入在业务路由前被截断。
+3. 用更新前状态执行 SkillRouter；只有显式“切换分支/切换到”才解除当前 skill 粘性。
+4. 根据被选 skill 进行专属槽位提取。
+5. 将用户消息、槽位和路由结果写入 WritingContext。
+6. 缺槽位时只询问第一个缺口并结束本轮。
+7. Socratic 路径先由确定性 ThinkingFlow 决策，再把状态变化写回上下文。
+8. 非材料检索业务由模型判断是否使用课程语料或外部检索；解析或供应商失败时退回确定性策略。
+9. MaterialSearch 使用确定性、分区且可溯源的回复，不让模型虚构检索结果。
+10. 其他路径按结构化 Prompt 调用模型，随后执行边界与证据守卫。
+11. 用最终回复反向更新候选方向、追问、待回答问题和面批摘要。
+12. 保存完整 student_progress、knowledge_use、检索状态、route_decision 与事件。
+
+## 等价矩阵
+
+| 子系统 | Python 合同 | Rust 实现策略 |
+|---|---|---|
+| Router | 命令、显式切换、粘性分支、资料拒绝、灵感、选题、P1 高频技能、别名与关键词 | 逐项移植谓词与优先级；RouteDecision 与 Python 阶段/意图/风险规则一致 |
+| SlotFiller | 六类专属填槽与命令/awaiting 特例 | 独立 `slot_filler` 模块，不再用通用字符串长度替代业务规则 |
+| WritingContext | 新题重置、主题稳定、场景/困惑/机制、路径选择、证据/反例、搜索词与摘要 | 保留强类型核心字段，兼容字段继续放入 flatten map；增加 before/after-reply 两阶段更新 |
+| ThinkingFlow | motivation → candidates → choice reason → evidence → refined/summary | 使用 Python 的 `required_action`、`missing_slot`、`allowed_response_kind` 合同和四类候选路径 |
+| Knowledge decision | 模型 JSON 决策 + 失败回退 + 用户拒绝优先 | 新增决策提示、严格解析与回退；模型失败不终止整轮 |
+| MaterialSearch | 上下文增强查询、年份、课程/学术/网页分区、失败说明 | 独立确定性计划与回复构建器，输出只来自 SearchHit |
+| Prompt | policy + skill + state + memory + evidence + latest turn | 保留 Rust 的不可信数据隔离，同时补齐 Python 的语义字段和流程合同 |
+| Metadata | student_progress、knowledge_use、两个搜索通道、路线与守卫 | 从最终状态集中构造，不再输出简化占位对象 |
+| HTTP Router | student access、sessions、messages、documents、reports、skills、teacher dashboard | 提供 Rust 原生兼容路由；所有读写限定在 Rust 新数据库 |
+
+## 验收标准
+
+- Python 中学生端 Router、SlotFiller、Socratic、材料检索与高频 Skill 合同均有对应 Rust 测试。
+- 多轮对话能保持主题，识别纠正与换题，生成候选路径，解析选择，追问理由，再检查证据。
+- 普通闲聊不污染 `socratic_rounds`；材料检索不经过生成式回答。
+- 模型知识决策可压制关键词触发；决策失败时仍能用回退策略完成回复。
+- Rust 全量测试、Clippy、前端测试与构建通过；Python 服务停止时 Rust 可独立运行。
+- 隔离脚本通过，最终只推送课程 GitLab remote。
+- 当前 Python 前端实际调用的 Router 在 Rust 中均有兼容端点和合同测试。

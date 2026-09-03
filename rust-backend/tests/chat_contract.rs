@@ -35,6 +35,8 @@ const WAIT: Duration = Duration::from_secs(5);
 struct QueueGateway {
     responses: Arc<Mutex<VecDeque<Result<String, ModelError>>>>,
     requests: Arc<Mutex<Vec<ModelRequest>>>,
+    knowledge_decision: Arc<Mutex<String>>,
+    fail_knowledge_decision: Arc<Mutex<bool>>,
 }
 
 impl QueueGateway {
@@ -47,11 +49,23 @@ impl QueueGateway {
                     .collect(),
             )),
             requests: Arc::new(Mutex::new(Vec::new())),
+            knowledge_decision: Arc::new(Mutex::new(
+                "{\"use_course_corpus\":true,\"use_external_search\":false,\"query\":\"\",\"reason\":\"test default\"}".to_owned(),
+            )),
+            fail_knowledge_decision: Arc::new(Mutex::new(false)),
         }
     }
 
     fn requests(&self) -> Vec<ModelRequest> {
         self.requests.lock().unwrap().clone()
+    }
+
+    fn set_knowledge_decision(&self, decision: &str) {
+        *self.knowledge_decision.lock().unwrap() = decision.to_owned();
+    }
+
+    fn fail_next_knowledge_decision(&self) {
+        *self.fail_knowledge_decision.lock().unwrap() = true;
     }
 }
 
@@ -65,6 +79,30 @@ impl ModelGateway for QueueGateway {
     ) -> Result<ModelResponse, ModelError> {
         if cancellation.is_cancelled() {
             return Err(ModelError::Cancelled);
+        }
+        let is_knowledge_decision = request
+            .messages
+            .iter()
+            .any(|message| message.content.contains("只判断本轮回答是否需要检索资料"));
+        if is_knowledge_decision {
+            let mut fail = self.fail_knowledge_decision.lock().unwrap();
+            if *fail {
+                *fail = false;
+                return Err(ModelError::Provider);
+            }
+            return Ok(ModelResponse {
+                content: self.knowledge_decision.lock().unwrap().clone(),
+                reasoning: None,
+                provider: settings.provider,
+                model: settings.name,
+                usage: Usage {
+                    input_tokens: 11,
+                    output_tokens: 7,
+                },
+                stop_reason: Some("stop".to_owned()),
+                response_id: Some("fake-knowledge-decision".to_owned()),
+                latency_ms: 1,
+            });
         }
         self.requests.lock().unwrap().push(request);
         let content = self
@@ -334,7 +372,7 @@ async fn long_conversation_prompt_compacts_old_turns_and_keeps_twelve_recent_mes
             .unwrap();
     }
 
-    let result = app.run("PPT 里如何定义研究问题？").await;
+    let result = app.run("老师讲过 audience awareness 吗？").await;
 
     assert_eq!(result.status, RunStatus::Completed);
     let prompt = &app.gateway.requests()[0].messages;
@@ -353,7 +391,7 @@ async fn long_conversation_prompt_compacts_old_turns_and_keeps_twelve_recent_mes
     assert!(
         recent
             .iter()
-            .all(|message| !message.content.contains("PPT 里如何定义研究问题？"))
+            .all(|message| !message.content.contains("老师讲过 audience awareness 吗？"))
     );
     let state = SessionRepository::new(app.pool.clone())
         .load_state(app.session_id)
@@ -392,7 +430,7 @@ async fn exit_word_does_not_reset_existing_writing_context() {
 async fn ppt_question_records_source_skill_and_one_content_call() {
     // Break caught: PPT routing/search or prompt generation silently adds a decision call.
     let app = Harness::new([Ok("课程材料将它定义为聚焦且可论证的问题。")], false).await;
-    let result = app.run("PPT 里如何定义研究问题？").await;
+    let result = app.run("老师讲过 audience awareness 吗？").await;
 
     assert_eq!(result.status, RunStatus::Completed);
     assert_eq!(result.metadata["selected_skill"], json!("ppt_qa"));
@@ -432,7 +470,7 @@ async fn ppt_question_records_source_skill_and_one_content_call() {
         prompt
             .iter()
             .filter(|message| message.role == ModelRole::System)
-            .all(|message| !message.content.contains("PPT 里如何定义研究问题？"))
+            .all(|message| !message.content.contains("老师讲过 audience awareness 吗？"))
     );
     assert!(
         result.metadata["used_corpus_files"]
@@ -441,7 +479,7 @@ async fn ppt_question_records_source_skill_and_one_content_call() {
                 .as_str()
                 .is_some_and(|source| source.ends_with(".md"))))
     );
-    assert_eq!(model_call_count(&app.pool, result.run_id).await, 1);
+    assert_eq!(model_call_count(&app.pool, result.run_id).await, 2);
     let messages = MessageRepository::new(app.pool.clone())
         .list_by_session(app.session_id)
         .await
@@ -451,6 +489,41 @@ async fn ppt_question_records_source_skill_and_one_content_call() {
         messages[0].metadata_json["run_id"],
         json!(result.run_id.to_legacy_hex())
     );
+}
+
+#[tokio::test]
+async fn model_knowledge_decision_can_suppress_keyword_driven_corpus_search() {
+    let app = Harness::new([Ok("先从你的具体观察继续。")], false).await;
+    app.gateway.set_knowledge_decision(
+        "{\"use_course_corpus\":false,\"use_external_search\":false,\"query\":\"\",\"reason\":\"本轮先澄清\"}",
+    );
+
+    let result = app
+        .run("我想研究搭子与朋友的关系，但是现在没有理论。")
+        .await;
+
+    assert_eq!(result.status, RunStatus::Completed);
+    assert_eq!(result.metadata["selected_skill"], "novelty_eval");
+    assert_eq!(result.metadata["knowledge_use"]["decider"], "llm");
+    assert_eq!(result.metadata["knowledge_use"]["use_course_corpus"], false);
+    assert_eq!(result.metadata["used_corpus_files"], json!([]));
+}
+
+#[tokio::test]
+async fn knowledge_decision_provider_failure_falls_back_without_failing_the_turn() {
+    let app = Harness::new([Ok("课程规则需要结合原文判断。")], false).await;
+    app.gateway.fail_next_knowledge_decision();
+
+    let result = app.run("作业字数和格式要求是什么？").await;
+
+    assert_eq!(result.status, RunStatus::Completed);
+    assert_eq!(result.metadata["selected_skill"], "course_policy_qa");
+    assert_eq!(
+        result.metadata["knowledge_use"]["decider"],
+        "deterministic_fallback"
+    );
+    assert_eq!(result.metadata["knowledge_use"]["use_course_corpus"], true);
+    assert_eq!(app.gateway.requests().len(), 1);
 }
 
 #[tokio::test]
@@ -602,7 +675,10 @@ async fn socratic_task_inference_advances_from_slot_question_for_natural_topic_l
         .load_state(app.session_id)
         .await
         .unwrap();
-    assert_eq!(state.state_json["collected_slots"]["thinking_task"], "选题");
+    assert_eq!(
+        state.state_json["collected_slots"]["thinking_task"],
+        "我想研究搭子和朋友的方向"
+    );
 }
 
 #[tokio::test]
@@ -659,18 +735,46 @@ async fn material_search_records_local_literature_and_web_sources() {
 }
 
 #[tokio::test]
-async fn evidence_prompt_includes_sanitized_url_and_doi_fields() {
+async fn deterministic_material_reply_includes_verified_url_and_doi_metadata() {
     let app = Harness::new([Ok("请核对这条文献。")], true).await;
-    app.run("联网找小组合作文献").await;
-    let request = app.gateway.requests().pop().unwrap();
-    let evidence = request
-        .messages
-        .iter()
-        .find(|message| message.content.contains("Verified Literature Evidence"))
-        .unwrap();
-    assert!(evidence.content.contains("https://example.test/paper"));
-    assert!(evidence.content.contains("10.1234/TEAM.1"));
-    assert!(!evidence.content.contains('\n') || !evidence.content.contains("[SYSTEM]"));
+    let result = app.run("联网找小组合作文献").await;
+    let answer = result.answer.unwrap();
+    assert!(
+        answer.contains("https://example.test/paper"),
+        "answer={answer}; metadata={}",
+        result.metadata
+    );
+    assert!(
+        result.metadata["grounding_sources"]
+            .to_string()
+            .contains("10.1234/TEAM.1")
+    );
+    assert!(app.gateway.requests().is_empty());
+}
+
+#[tokio::test]
+async fn novelty_eval_with_explicit_external_search_uses_the_deterministic_material_reply() {
+    // Python parity: novelty_eval + explicit literature search bypasses free-form generation.
+    let app = Harness::new([Ok("这段模型回答不应被使用。")], true).await;
+    app.gateway.set_knowledge_decision(
+        "{\"use_course_corpus\":true,\"use_external_search\":true,\"query\":\"小组合作\",\"reason\":\"用户明确要求联网查文献\"}",
+    );
+
+    let result = app.run("评估这个选题的创新性：搭子与朋友的关系").await;
+
+    assert_eq!(result.status, RunStatus::Completed);
+    assert_eq!(result.metadata["selected_skill"], json!("novelty_eval"));
+    assert_eq!(
+        result.metadata["literature_search"]["triggered"],
+        json!(true)
+    );
+    assert!(
+        result
+            .answer
+            .unwrap()
+            .contains("https://example.test/paper")
+    );
+    assert!(app.gateway.requests().is_empty());
 }
 
 #[tokio::test]
@@ -681,7 +785,7 @@ async fn unsupported_model_source_is_rejected_but_verified_sources_remain_in_met
         false,
     )
     .await;
-    let result = app.run("PPT 里如何定义研究问题？").await;
+    let result = app.run("老师讲过 audience awareness 吗？").await;
 
     assert_eq!(result.metadata["guardrail_triggered"], json!(true));
     assert_eq!(result.metadata["grounding_valid"], json!(false));
@@ -843,7 +947,9 @@ async fn topic_switch_is_detected_before_contextual_routing_and_clears_all_old_t
         .await
         .unwrap();
 
-    let result = app.run("换个方向，我想研究小组合作中的课堂参与").await;
+    let result = app
+        .run("切换分支：换个方向，我想研究小组合作中的课堂参与")
+        .await;
     let state = SessionRepository::new(app.pool.clone())
         .load_state(app.session_id)
         .await
@@ -1045,7 +1151,7 @@ async fn awaited_writing_feedback_slots_are_bound_in_order_across_turns() {
     );
     assert_eq!(
         state.state_json["collected_slots"]["feedback_goal"],
-        "逻辑和结构"
+        "重点看逻辑和结构"
     );
 }
 
@@ -1082,7 +1188,7 @@ async fn awaited_draft_becomes_the_revision_comparison_baseline() {
 #[tokio::test]
 async fn reset_clears_context_without_creating_a_skill_event() {
     let app = Harness::new([Ok("课件材料提供了一个定义。")], false).await;
-    app.run("PPT 里如何定义研究问题？").await;
+    app.run("老师讲过 audience awareness 吗？").await;
     let before = SkillEventRepository::new(app.pool.clone())
         .list_by_session(app.session_id)
         .await
@@ -1145,7 +1251,7 @@ async fn active_skill_remains_sticky_until_the_user_explicitly_switches() {
         false,
     )
     .await;
-    app.run("PPT 里如何定义研究问题？").await;
+    app.run("老师讲过 audience awareness 吗？").await;
     let before = SkillEventRepository::new(app.pool.clone())
         .list_by_session(app.session_id)
         .await
@@ -1472,7 +1578,7 @@ async fn atomic_final_commit_rolls_back_state_answer_and_events_on_database_fail
     .execute(&app.pool)
     .await
     .unwrap();
-    let result = app.run("PPT 里如何定义研究问题？").await;
+    let result = app.run("老师讲过 audience awareness 吗？").await;
     assert_eq!(result.status, RunStatus::Failed);
     let messages = MessageRepository::new(app.pool.clone())
         .list_by_session(app.session_id)
@@ -1658,7 +1764,7 @@ async fn validated_theory_and_method_routes_own_the_final_persisted_stage() {
 async fn every_meaningful_phase_has_ordered_start_and_completion_events() {
     // Break caught: UI traces show completion without a preceding phase start.
     let app = Harness::new([Ok("课程材料给出了一个可论证的定义。")], false).await;
-    let result = app.run("PPT 里如何定义研究问题？").await;
+    let result = app.run("老师讲过 audience awareness 吗？").await;
     let phase_events = result
         .events
         .iter()
@@ -1674,8 +1780,8 @@ async fn every_meaningful_phase_has_ordered_start_and_completion_events() {
         "accept_input",
         "classify_input_safety",
         "route_skill",
-        "update_writing_context",
         "fill_required_slots",
+        "update_writing_context",
         "decide_knowledge_use",
         "search_knowledge",
         "build_prompt",

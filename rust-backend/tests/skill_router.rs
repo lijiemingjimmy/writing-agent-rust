@@ -136,7 +136,7 @@ fn active_skill_is_sticky_without_an_explicit_switch() {
 
 #[test]
 fn explicit_switch_can_replace_the_active_skill() {
-    let input = RouteInput::new("切换分支：PPT 里扎根理论是什么意思？")
+    let input = RouteInput::new("切换分支：/ppt")
         .with_current_skill("socratic_review")
         .with_writing_context(json!({"stage": "topic", "motivation": "课堂观察"}));
     let decision = load_router().route(&input);
@@ -216,6 +216,78 @@ fn numeric_command_is_a_socratic_selection_when_context_is_active() {
 
     assert_eq!(decision.target_skill.as_deref(), Some("socratic_review"));
     assert_eq!(decision.intent, "select");
+}
+
+#[test]
+fn routes_the_complete_python_high_frequency_contract() {
+    let router = load_router();
+    for (message, expected) in [
+        ("我不知道写啥", "novelty_eval"),
+        ("我没有啥灵感", "novelty_eval"),
+        (
+            "这个研究问题好不好：小组合作为什么分工不均？",
+            "research_question_evaluator",
+        ),
+        ("我这个理论是不是硬套？", "theory_fit_checker"),
+        ("访谈对象怎么设计比较可行？", "method_feasibility_checker"),
+        ("这段初稿哪里有问题，怎么改？", "draft_diagnosis"),
+        ("作业字数和格式要求是什么？", "course_policy_qa"),
+        ("AI率太高怎么办，能不能用 ChatGPT？", "ai_use_boundary_qa"),
+        ("这个引用格式和 DOI 可靠吗？", "academic_norm_check"),
+    ] {
+        let decision = router.route(&RouteInput::new(message));
+        assert_eq!(
+            decision.target_skill.as_deref(),
+            Some(expected),
+            "{message}"
+        );
+    }
+}
+
+#[test]
+fn high_frequency_routes_precede_generic_ppt_keyword_matching() {
+    let router = load_router();
+    let research = router.route(&RouteInput::new("PPT 里如何定义研究问题？"));
+    assert_eq!(
+        research.target_skill.as_deref(),
+        Some("research_question_evaluator")
+    );
+
+    let courseware = router.route(&RouteInput::new("老师讲过 audience awareness 吗？"));
+    assert_eq!(courseware.target_skill.as_deref(), Some("ppt_qa"));
+}
+
+#[test]
+fn explicit_material_source_and_rejection_follow_python_branch_rules() {
+    let router = load_router();
+    let context = json!({"topic":"朋友和搭子", "thinking_task":"选题", "stage":"topic"});
+
+    let source = router.route(
+        &RouteInput::new("就是网上的文献")
+            .with_current_skill("socratic_review")
+            .with_writing_context(context.clone()),
+    );
+    assert_eq!(source.target_skill.as_deref(), Some("socratic_review"));
+
+    let rejected = router.route(
+        &RouteInput::new("我问你细化选题，谁让你给我文献了")
+            .with_current_skill("material_search")
+            .with_writing_context(context),
+    );
+    assert_eq!(rejected.target_skill.as_deref(), Some("material_search"));
+}
+
+#[test]
+fn route_stage_matches_python_context_sensitive_socratic_contract() {
+    let router = load_router();
+    let decision = router.route(
+        &RouteInput::new("我想整理文章结构")
+            .with_current_skill("socratic_review")
+            .with_writing_context(json!({"thinking_task":"论证结构", "stage":"draft_argument"})),
+    );
+
+    assert_eq!(decision.target_skill.as_deref(), Some("socratic_review"));
+    assert_eq!(decision.stage.as_str(), "draft_argument");
 }
 
 #[test]

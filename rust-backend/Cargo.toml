@@ -5,10 +5,11 @@ edition = "2024"
 
 [dependencies]
 async-trait = "0.1"
-axum = "0.8"
+axum = { version = "0.8", features = ["multipart"] }
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 glob = "0.3"
 futures-util = "0.3"
+multer = "3"
 genai = "0.6"
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
@@ -16,6 +17,7 @@ reqwest13 = { package = "reqwest", version = "0.13", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
+sha2 = "0.10"
 sqlx = { version = "0.8", features = ["macros", "migrate", "runtime-tokio-rustls", "sqlite"] }
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }

@@ -11,8 +11,10 @@ use crate::{
     domain::{FlowStage, RiskLevel, RouteDecision, RouteInput, SessionStateData},
     llm::ModelRequest,
     skills::{
-        GeneralPromptContext, GroundingGuard, GuardPolicy, PromptBuilder, PromptContext,
-        SkillDefinition, SkillRegistry, SkillRouter, SocraticPromptContext, ThinkingFlowController,
+        GeneralPromptContext, GroundingGuard, GuardPolicy, KnowledgeDecision,
+        MaterialSearchService, PromptBuilder, PromptContext, SkillDefinition, SkillRegistry,
+        SkillRouter, SlotFiller, SocraticPromptContext, ThinkingFlowController,
+        build_knowledge_decision_prompt,
     },
     store::{
         runs::WritingTurnSkillEvent,
@@ -34,7 +36,9 @@ pub struct WritingCoachProgram {
     messages: MessageRepository,
     registry: SkillRegistry,
     router: SkillRouter,
+    slot_filler: SlotFiller,
     thinking_flow: ThinkingFlowController,
+    material_search: MaterialSearchService,
     prompt_builder: PromptBuilder,
     grounding_guard: GroundingGuard,
     knowledge: Arc<KnowledgeCoordinator>,
@@ -73,7 +77,9 @@ impl WritingCoachProgram {
             messages: MessageRepository::new(pool.clone()),
             router: SkillRouter::new(registry.clone()),
             registry,
+            slot_filler: SlotFiller::new(),
             thinking_flow: ThinkingFlowController::new(),
+            material_search: MaterialSearchService::new(5),
             prompt_builder: PromptBuilder::new(),
             grounding_guard: GroundingGuard::new(),
             knowledge,
@@ -101,6 +107,28 @@ impl WritingCoachProgram {
     ) -> Result<RouteDecision, AppError> {
         let route_input = route_input(message, state);
         Ok(self.router.route(&route_input))
+    }
+
+    async fn decide_knowledge_use(
+        &self,
+        context: &RunContext,
+        skill: &SkillDefinition,
+        message: &str,
+        state: &SessionStateData,
+        web_enabled: bool,
+    ) -> Result<KnowledgeDecision, AppError> {
+        let fallback = KnowledgeDecision::fallback(&skill.id, message, web_enabled);
+        let request = ModelRequest {
+            messages: build_knowledge_decision_prompt(&skill.id, message, state),
+            temperature: Some(0.0),
+        };
+        match context.call_model("decide_knowledge_use", request).await {
+            Ok(response) => {
+                Ok(KnowledgeDecision::parse(&response.content, web_enabled).unwrap_or(fallback))
+            }
+            Err(AppError::Model(_)) => Ok(fallback),
+            Err(error) => Err(error),
+        }
     }
 }
 
@@ -302,20 +330,14 @@ impl AgentProgram for WritingCoachProgram {
             state.extra.remove("awaiting_slots");
             state.extra.remove("collected_slots");
         }
-        let previous_socratic_rounds = state.writing_context.socratic_rounds;
-        let context_update = state.apply_user_message(routing_message);
-        memory.refresh_confirmed_facts(&state);
 
         Self::start_phase(&context, "route_skill").await?;
         let route = self.route(&context, &turn.content, &state).await?;
         Self::complete_phase(&context, "route_skill").await?;
 
         if route.target_skill.is_none() {
-            state.writing_context.socratic_rounds = if context_update.topic_changed {
-                0
-            } else {
-                previous_socratic_rounds
-            };
+            state.update_from_user(routing_message, None, &Map::new());
+            memory.refresh_confirmed_facts(&state);
             Self::start_phase(&context, "general_response").await?;
             let prompt = self.prompt_builder.build_general(GeneralPromptContext {
                 state: &state,
@@ -368,7 +390,7 @@ impl AgentProgram for WritingCoachProgram {
                 "general_response": true,
                 "used_corpus_files": [],
                 "route_decision": route,
-                "student_progress": compatibility_progress(&state, &route, current_skill.as_deref()),
+                "student_progress": student_progress(&state, &route, current_skill.as_deref(), &[]),
                 "used_web_search": false,
                 "search_requested": false,
                 "literature_search": idle_literature_search(),
@@ -424,30 +446,8 @@ impl AgentProgram for WritingCoachProgram {
             )
             .await?;
 
-        Self::start_phase(&context, "update_writing_context").await?;
-        let flow_decision = if skill.id == "socratic_review" {
-            let flow = self
-                .thinking_flow
-                .advance(&state.writing_context, routing_message);
-            state.writing_context.candidate_paths = flow.candidate_paths.clone();
-            state.writing_context.thinking_stage = Some(flow.stage.clone());
-            state.writing_context.flow_stage = Some(flow.stage.clone());
-            state.writing_context.ready_for_refined_advice = flow.ready_for_summary;
-            Some(flow)
-        } else {
-            None
-        };
-        let thinking_stage = flow_decision.as_ref().map(|flow| flow.stage.clone());
-        let revision_comparison = update_revision_state(&mut state, routing_message);
-        // The validated route owns the final stage for this turn. Context extraction may infer a
-        // provisional stage, so apply it first and record the route last.
-        record_route(&mut state, &route);
-        Self::complete_phase(&context, "update_writing_context").await?;
-
         Self::start_phase(&context, "fill_required_slots").await?;
-        let mut collected = collected_slots(&state);
-        let awaited = awaiting_slots(&state);
-        fill_slots(skill, routing_message, &awaited, &mut collected);
+        let collected = self.slot_filler.fill(skill, &state, routing_message);
         if state.extra.get("latest_draft").is_none()
             && let Some(draft) = collected.get("draft_text").and_then(Value::as_str)
         {
@@ -455,12 +455,7 @@ impl AgentProgram for WritingCoachProgram {
                 .extra
                 .insert("latest_draft".to_owned(), Value::String(draft.to_owned()));
         }
-        let missing = skill
-            .required_slots
-            .iter()
-            .filter(|slot| !slot_has_value(&collected, slot))
-            .cloned()
-            .collect::<Vec<_>>();
+        let missing = self.slot_filler.missing_slots(skill, &collected);
         state.task_type = Some(skill.id.clone());
         state
             .extra
@@ -475,15 +470,56 @@ impl AgentProgram for WritingCoachProgram {
         );
         Self::complete_phase(&context, "fill_required_slots").await?;
 
-        if let Some(slot) = missing.first() {
-            let question = skill
-                .slot_questions
-                .as_ref()
-                .and_then(|questions| questions.get(slot))
-                .cloned()
-                .unwrap_or_else(|| "请先补充当前任务最缺的信息。".to_owned());
+        Self::start_phase(&context, "update_writing_context").await?;
+        let context_update = state.update_from_user(routing_message, Some(&skill.id), &collected);
+        state.task_type = Some(skill.id.clone());
+        state
+            .extra
+            .insert("current_skill".to_owned(), Value::String(skill.id.clone()));
+        state.extra.insert(
+            "collected_slots".to_owned(),
+            Value::Object(collected.clone()),
+        );
+        state.extra.insert(
+            "awaiting_slots".to_owned(),
+            serde_json::to_value(&missing).unwrap_or_else(|_| json!([])),
+        );
+        memory.refresh_confirmed_facts(&state);
+        let flow_decision = if skill.id == "socratic_review" {
+            let flow = self
+                .thinking_flow
+                .advance(&state.writing_context, routing_message);
+            if let Some(selected) = flow.selected_option.as_deref()
+                && let Some(path) = state
+                    .writing_context
+                    .candidate_paths
+                    .iter()
+                    .find(|path| path.index == selected)
+                    .cloned()
+            {
+                state.writing_context.selected_path_id = Some(selected.to_owned());
+                state.writing_context.selected_path = Some(path.title.clone());
+                state.writing_context.selected_direction = Some(path.title.clone());
+                state.writing_context.selected_path_detail = Some(path);
+            }
+            state.writing_context.candidate_paths = flow.candidate_paths.clone();
+            state.writing_context.thinking_stage = Some(flow.stage.clone());
+            state.writing_context.flow_stage = Some(flow.stage.clone());
+            state.writing_context.ready_for_refined_advice = flow.stage == FlowStage::RefinedAdvice;
+            Some(flow)
+        } else {
+            None
+        };
+        let thinking_stage = flow_decision.as_ref().map(|flow| flow.stage.clone());
+        let revision_comparison = update_revision_state(&mut state, routing_message);
+        record_route(&mut state, &route);
+        Self::complete_phase(&context, "update_writing_context").await?;
+
+        if !missing.is_empty() {
+            let question = self.slot_filler.next_question(skill, &missing);
             Self::start_phase(&context, "persist_answer").await?;
             let metadata = answer_metadata(
+                &state,
                 skill,
                 &route,
                 &KnowledgeBundle::default(),
@@ -494,6 +530,7 @@ impl AgentProgram for WritingCoachProgram {
                 thinking_stage.as_ref(),
                 revision_comparison,
                 context_update.topic_changed,
+                None,
             );
             context
                 .persist_terminal_writing_turn(
@@ -517,7 +554,32 @@ impl AgentProgram for WritingCoachProgram {
         }
 
         Self::start_phase(&context, "decide_knowledge_use").await?;
-        let plan = knowledge_plan(skill, routing_message, web_enabled, turn.session_id);
+        let knowledge_decision = if skill.id == "material_search" {
+            KnowledgeDecision {
+                use_course_corpus: true,
+                use_external_search: web_enabled,
+                query: routing_message.to_owned(),
+                reason: "材料检索 skill 直接执行结构化检索".to_owned(),
+                decider: "deterministic".to_owned(),
+            }
+        } else {
+            self.decide_knowledge_use(&context, skill, routing_message, &state, web_enabled)
+                .await?
+        };
+        let deterministic_material_reply = skill.id == "material_search"
+            || (skill.id == "novelty_eval" && knowledge_decision.use_external_search);
+        let material_plan = deterministic_material_reply.then(|| {
+            self.material_search
+                .build_plan(routing_message, &state.writing_context)
+        });
+        let plan = knowledge_plan(
+            skill,
+            routing_message,
+            web_enabled,
+            turn.session_id,
+            material_plan.as_ref(),
+            &knowledge_decision,
+        );
         Self::complete_phase(&context, "decide_knowledge_use").await?;
 
         Self::start_phase(&context, "search_knowledge").await?;
@@ -529,6 +591,77 @@ impl AgentProgram for WritingCoachProgram {
                 .await?
         };
         Self::complete_phase(&context, "search_knowledge").await?;
+
+        if deterministic_material_reply && let Some(material_plan) = material_plan.as_ref() {
+            Self::start_phase(&context, "build_material_reply").await?;
+            let raw_reply =
+                self.material_search
+                    .build_reply(material_plan, &knowledge, web_enabled);
+            Self::complete_phase(&context, "build_material_reply").await?;
+            Self::start_phase(&context, "validate_grounding_and_guardrail").await?;
+            let user_texts = memory
+                .recent_messages
+                .iter()
+                .filter(|message| message.role == "user")
+                .map(|message| message.content.clone())
+                .chain(std::iter::once(turn.content.clone()));
+            let guarded = self.grounding_guard.validate(
+                &raw_reply,
+                &knowledge,
+                GuardPolicy::default().with_user_texts(user_texts),
+            );
+            Self::complete_phase(&context, "validate_grounding_and_guardrail").await?;
+            Self::start_phase(&context, "persist_answer").await?;
+            state
+                .extra
+                .insert("awaiting_slots".to_owned(), Value::Array(Vec::new()));
+            state.extra.remove("last_question");
+            state.update_after_reply(&guarded.answer, Some(&skill.id));
+            let mut metadata = answer_metadata(
+                &state,
+                skill,
+                &route,
+                &knowledge,
+                web,
+                guarded.triggered,
+                false,
+                &[],
+                thinking_stage.as_ref(),
+                revision_comparison,
+                context_update.topic_changed,
+                Some(&knowledge_decision),
+            );
+            metadata["grounding_valid"] = Value::Bool(guarded.grounding_valid);
+            metadata["grounding_sources"] =
+                serde_json::to_value(&guarded.sources).unwrap_or_else(|_| json!([]));
+            metadata["guardrail"] = json!({
+                "allowed": guarded.allowed,
+                "violations": guarded.violations,
+            });
+            enrich_material_search_metadata(&mut metadata, material_plan, &knowledge);
+            context
+                .persist_terminal_writing_turn(
+                    turn.session_id,
+                    serde_json::to_value(&state).map_err(corrupt_json)?,
+                    &guarded.answer,
+                    metadata.clone(),
+                    &[
+                        WritingTurnSkillEvent::new(
+                            &skill.id,
+                            "selected",
+                            json!({"run_id": context.run_id().to_legacy_hex(), "awaiting_slots": [], "route_decision": route}),
+                        ),
+                        WritingTurnSkillEvent::new(
+                            &skill.id,
+                            "answered",
+                            json!({"run_id": context.run_id().to_legacy_hex(), "used_corpus_files": metadata["used_corpus_files"], "guardrail_triggered": guarded.triggered, "grounding_valid": guarded.grounding_valid}),
+                        ),
+                    ],
+                    "persist_answer",
+                )
+                .await?;
+            return Ok(AgentAnswer::new(guarded.answer).with_metadata(metadata));
+        }
 
         Self::start_phase(&context, "build_prompt").await?;
         let prompt = if let Some(flow) = flow_decision.as_ref() {
@@ -590,7 +723,10 @@ impl AgentProgram for WritingCoachProgram {
         state
             .extra
             .insert("awaiting_slots".to_owned(), Value::Array(Vec::new()));
+        state.extra.remove("last_question");
+        state.update_after_reply(&guarded.answer, Some(&skill.id));
         let mut metadata = answer_metadata(
+            &state,
             skill,
             &route,
             &knowledge,
@@ -601,6 +737,7 @@ impl AgentProgram for WritingCoachProgram {
             thinking_stage.as_ref(),
             revision_comparison,
             context_update.topic_changed,
+            Some(&knowledge_decision),
         );
         metadata["grounding_valid"] = Value::Bool(guarded.grounding_valid);
         metadata["grounding_sources"] =
@@ -720,6 +857,71 @@ fn compatibility_progress(
     })
 }
 
+fn student_progress(
+    state: &SessionStateData,
+    route: &RouteDecision,
+    current_skill: Option<&str>,
+    awaiting: &[String],
+) -> Value {
+    let writing = &state.writing_context;
+    let pending = ["pending_questions", "unanswered_questions"]
+        .into_iter()
+        .filter_map(|key| writing.extra.get(key).and_then(Value::as_array))
+        .find(|items| !items.is_empty())
+        .map(|items| items.iter().take(3).cloned().collect::<Vec<_>>())
+        .unwrap_or_else(|| {
+            awaiting
+                .iter()
+                .take(3)
+                .cloned()
+                .map(Value::String)
+                .collect()
+        });
+    let next_task = if !pending.is_empty() {
+        "先回答当前追问，再进入下一步建议。"
+    } else if route
+        .required_context
+        .iter()
+        .any(|item| item == "motivation")
+    {
+        "补充你为什么关心这个题，以及最初观察到的具体场景。"
+    } else if route
+        .required_context
+        .iter()
+        .any(|item| item == "choice_reason")
+    {
+        "说明为什么选择这个方向，也说一个没有选择其他方向的理由。"
+    } else if route
+        .required_context
+        .iter()
+        .any(|item| item == "material_source")
+    {
+        "列出你能拿到的材料来源，例如访谈、帖子、课程案例或个人经历。"
+    } else if writing.thinking_stage == Some(FlowStage::EvidenceCheck) {
+        "补 1 个支持案例和 1 个可能反例，用来检验题目是否站得住。"
+    } else if writing.research_question.is_some() {
+        "检查研究问题的对象、机制、材料和反方观点是否都清楚。"
+    } else {
+        "继续补充主题、观察和材料，我会把它推进成可研究问题。"
+    };
+    json!({
+        "stage": route.stage.as_str(),
+        "intent": writing.extra.get("last_intent").and_then(Value::as_str).unwrap_or(&route.intent),
+        "current_skill": current_skill,
+        "thinking_stage": writing.thinking_stage.as_ref().or(writing.flow_stage.as_ref()).map(FlowStage::as_str),
+        "thinking_task": writing.extra.get("thinking_task"),
+        "topic": writing.topic.as_deref().or(writing.initial_idea.as_deref()),
+        "context_summary": writing.context_summary,
+        "research_question": writing.research_question,
+        "selected_path": writing.selected_path.as_deref().or(writing.selected_direction.as_deref()),
+        "choice_reason": writing.choice_reason,
+        "socratic_rounds": writing.socratic_rounds,
+        "pending_questions": pending,
+        "next_task": next_task,
+        "needs_teacher_confirmation": writing.extra.get("unanswered_questions").and_then(Value::as_array).is_some_and(|items| !items.is_empty()),
+    })
+}
+
 fn idle_literature_search() -> Value {
     json!({
         "enabled": false,
@@ -768,135 +970,38 @@ fn record_route(state: &mut SessionStateData, route: &RouteDecision) {
     }
 }
 
-fn collected_slots(state: &SessionStateData) -> Map<String, Value> {
-    state
-        .extra
-        .get("collected_slots")
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default()
-}
-
-fn fill_slots(
-    skill: &SkillDefinition,
-    message: &str,
-    awaited: &[String],
-    slots: &mut Map<String, Value>,
-) {
-    let text = message.trim();
-    if let Some(slot) = awaited.first()
-        && !slot_has_value(slots, slot)
-        && let Some(value) = extract_slot_value(slot, text, true)
-    {
-        slots.insert(slot.clone(), Value::String(value));
-    }
-    for slot in &skill.required_slots {
-        if slot_has_value(slots, slot) {
-            continue;
-        }
-        let value = extract_slot_value(slot, text, false);
-        if let Some(value) = value.filter(|value| !value.trim().is_empty()) {
-            slots.insert(slot.clone(), Value::String(value));
-        }
-    }
-}
-
-fn extract_slot_value(slot: &str, text: &str, awaited: bool) -> Option<String> {
-    match slot {
-        "question" => Some(text.to_owned()),
-        "target_text" if text.chars().count() >= 12 => Some(text.to_owned()),
-        "source_text" if text.chars().count() >= 30 => Some(text.to_owned()),
-        "thinking_task"
-            if contains_any(
-                text,
-                &["选题", "主题", "想写", "研究", "方向", "搭子", "朋友"],
-            ) =>
-        {
-            Some("选题".to_owned())
-        }
-        "thinking_task" if contains_any(text, &["论证", "结构", "论点"]) => {
-            Some("论证结构".to_owned())
-        }
-        "thinking_task" if contains_any(text, &["文献", "综述", "材料"]) => {
-            Some("文献综述".to_owned())
-        }
-        "thinking_task" if contains_any(text, &["修改", "修订", "调整"]) => {
-            Some("修改方案".to_owned())
-        }
-        "initial_idea" if text.chars().count() >= 8 => Some(text.to_owned()),
-        "assignment_requirement" => after_label(text, &["作业要求", "要求", "题目"])
-            .or_else(|| {
-                (contains_any(text, &["字", "不少于", "不超过", "字数"])).then(|| text.to_owned())
-            })
-            .or_else(|| awaited.then(|| text.to_owned())),
-        "draft_text" => after_label(text, &["全文", "文章", "初稿", "原文", "草稿"])
-            .or_else(|| (awaited && text.chars().count() >= 20).then(|| text.to_owned())),
-        "core_argument" => after_label(text, &["核心观点", "中心论点", "主旨", "论点"])
-            .or_else(|| awaited.then(|| text.to_owned())),
-        "feedback_goal" => after_label(text, &["目标", "希望", "重点看"])
-            .or_else(|| awaited.then(|| text.to_owned())),
-        "review_goal" => after_label(text, &["互评目标", "目标", "希望"])
-            .or_else(|| awaited.then(|| text.to_owned())),
-        _ => None,
-    }
-}
-
-fn slot_has_value(slots: &Map<String, Value>, slot: &str) -> bool {
-    slots.get(slot).is_some_and(|value| match value {
-        Value::String(value) => !value.trim().is_empty(),
-        Value::Array(value) => !value.is_empty(),
-        Value::Null => false,
-        _ => true,
-    })
-}
-
-fn after_label(text: &str, labels: &[&str]) -> Option<String> {
-    labels.iter().find_map(|label| {
-        let (_, rest) = text.split_once(label)?;
-        let value = rest
-            .trim_start_matches(['：', ':', '是', '为', ' '])
-            .split(['\n', '。'])
-            .next()
-            .unwrap_or_default()
-            .trim();
-        (!value.is_empty()).then(|| value.to_owned())
-    })
-}
-
 fn knowledge_plan(
     skill: &SkillDefinition,
     message: &str,
     web_enabled: bool,
     session_id: crate::domain::SessionId,
+    material: Option<&crate::skills::MaterialSearchPlan>,
+    decision: &KnowledgeDecision,
 ) -> KnowledgePlan {
     let mut tools = Vec::new();
-    let course = matches!(
-        skill.id.as_str(),
-        "ppt_qa"
-            | "material_search"
-            | "novelty_eval"
-            | "research_question_evaluator"
-            | "theory_fit_checker"
-            | "method_feasibility_checker"
-            | "course_policy_qa"
-            | "academic_norm_check"
-            | "draft_diagnosis"
-            | "writing_feedback"
-    );
-    if course {
+    if decision.use_course_corpus {
         tools.push("course_corpus");
     }
     if matches!(skill.id.as_str(), "draft_diagnosis" | "writing_feedback") {
         tools.push("session_documents");
     }
-    if skill.id == "material_search" && web_enabled {
+    if decision.use_external_search && web_enabled {
         tools.extend(["scholarly", "web"]);
     }
-    let years = extract_year_range(message);
+    let years = material
+        .map(|plan| (plan.year_from, plan.year_to))
+        .unwrap_or_else(|| extract_year_range(message));
     KnowledgePlan::new(tools.into_iter().map(|tool| {
+        let request = match (tool, material) {
+            ("course_corpus", Some(plan)) => SearchRequest::new(&plan.corpus_query),
+            ("scholarly", Some(plan)) => SearchRequest::from_terms(plan.query_terms.clone())
+                .with_max_results(plan.max_results),
+            ("web", Some(plan)) => SearchRequest::new(&plan.web_query),
+            _ => SearchRequest::new(message),
+        };
         PlannedSearch::new(
             tool,
-            SearchRequest::new(message)
+            request
                 .with_year_range(years.0, years.1)
                 .with_session_id(session_id)
                 .with_target_skill_id(&skill.id),
@@ -973,6 +1078,7 @@ fn update_revision_state(state: &mut SessionStateData, message: &str) -> Value {
 
 #[allow(clippy::too_many_arguments)]
 fn answer_metadata(
+    state: &SessionStateData,
     skill: &SkillDefinition,
     route: &RouteDecision,
     knowledge: &KnowledgeBundle,
@@ -983,6 +1089,7 @@ fn answer_metadata(
     thinking_stage: Option<&FlowStage>,
     revision_comparison: Value,
     topic_changed: bool,
+    knowledge_decision: Option<&KnowledgeDecision>,
 ) -> Value {
     let used_corpus = knowledge
         .hits
@@ -999,23 +1106,14 @@ fn answer_metadata(
     let web = filtered_sources(&knowledge.hits, |provider| {
         matches!(provider, "web" | "searxng" | "bing" | "brave")
     });
-    let course_requested = matches!(
-        skill.id.as_str(),
-        "ppt_qa"
-            | "material_search"
-            | "novelty_eval"
-            | "research_question_evaluator"
-            | "theory_fit_checker"
-            | "method_feasibility_checker"
-            | "course_policy_qa"
-            | "academic_norm_check"
-            | "draft_diagnosis"
-            | "writing_feedback"
-    );
-    let external_requested = web_state.requested && skill.id == "material_search";
-    let web_enabled = web_state.enabled() && skill.id == "material_search";
+    let course_requested = knowledge_decision.is_some_and(|decision| decision.use_course_corpus);
+    let external_requested =
+        knowledge_decision.is_some_and(|decision| decision.use_external_search);
+    let structured_search =
+        skill.id == "material_search" || (skill.id == "novelty_eval" && external_requested);
+    let web_enabled = web_state.enabled() && external_requested;
     let web_attempted = web_enabled && !slot_question;
-    let web_error = if skill.id != "material_search" || !web_state.requested {
+    let web_error = if !structured_search || !web_state.requested {
         None
     } else if !web_state.available {
         Some("web_search_unavailable")
@@ -1034,11 +1132,7 @@ fn answer_metadata(
         "thinking_stage": thinking_stage.map(FlowStage::as_str),
         "topic_changed": topic_changed,
         "revision_comparison": revision_comparison,
-        "student_progress": {
-            "stage": route.stage.as_str(),
-            "current_skill": skill.id,
-            "awaiting_slots": missing,
-        },
+        "student_progress": student_progress(state, route, Some(&skill.id), missing),
         "search_requested": !slot_question && (course_requested || web_attempted),
         "search_has_hits": !knowledge.hits.is_empty(),
         "external_search_requested": external_requested,
@@ -1048,11 +1142,15 @@ fn answer_metadata(
             "use_course_corpus": course_requested,
             "course_hit_count": used_corpus.len(),
             "use_external_search": web_attempted,
-            "decider": "deterministic",
+            "query": knowledge_decision.map(|decision| decision.query.as_str()),
+            "reason": knowledge_decision.map(|decision| decision.reason.as_str()),
+            "decider": knowledge_decision.map(|decision| decision.decider.as_str()).unwrap_or("not_run"),
         },
         "literature_search": {
             "enabled": web_attempted,
-            "triggered": skill.id == "material_search",
+            "available": web_state.available,
+            "requested": web_state.requested,
+            "triggered": structured_search,
             "error": web_error,
             "results": literature,
         },
@@ -1064,7 +1162,7 @@ fn answer_metadata(
             "enabled": web_enabled,
             "attempted": web_attempted,
             "used": !web.is_empty(),
-            "triggered": skill.id == "material_search",
+            "triggered": structured_search,
             "error": web_error,
             "results": web,
         },
@@ -1072,6 +1170,38 @@ fn answer_metadata(
         "provider_failures": knowledge.metadata.provider_failures,
         "guardrail_triggered": guardrail_triggered,
     })
+}
+
+fn enrich_material_search_metadata(
+    metadata: &mut Value,
+    plan: &crate::skills::MaterialSearchPlan,
+    knowledge: &KnowledgeBundle,
+) {
+    metadata["literature_search"]["provider"] = json!("scholarly");
+    metadata["literature_search"]["query"] = json!(plan.query_terms);
+    metadata["literature_search"]["year_from"] = json!(plan.year_from);
+    metadata["literature_search"]["year_to"] = json!(plan.year_to);
+    metadata["web_search"]["query"] = json!(plan.web_query);
+
+    let is_web_provider = |provider: &str| {
+        matches!(provider, "web" | "searxng" | "bing" | "brave") || provider.starts_with("web:")
+    };
+    if let Some(failure) = knowledge
+        .metadata
+        .provider_failures
+        .iter()
+        .find(|failure| !is_web_provider(&failure.provider))
+    {
+        metadata["literature_search"]["error"] = json!(failure.message);
+    }
+    if let Some(failure) = knowledge
+        .metadata
+        .provider_failures
+        .iter()
+        .find(|failure| is_web_provider(&failure.provider))
+    {
+        metadata["web_search"]["error"] = json!(failure.message);
+    }
 }
 
 fn filtered_sources(hits: &[SearchHit], include: impl Fn(&str) -> bool) -> Vec<Value> {

@@ -1,3 +1,5 @@
+use serde_json::Value;
+
 use crate::{
     domain::{RiskLevel, RouteDecision, RouteInput, WritingStage},
     skills::{SkillDefinition, SkillRegistry},
@@ -31,125 +33,78 @@ impl SkillRouter {
         input: &RouteInput,
         explicit_switch: bool,
     ) -> Option<&'a SkillDefinition> {
-        if !explicit_switch
-            && let Some(current) = input
-                .current_skill
-                .as_deref()
-                .and_then(|id| self.registry.get(id))
-        {
+        let previous_skill = input.current_skill.as_deref();
+        let current_skill = (!explicit_switch).then_some(previous_skill).flatten();
+        if let Some(current) = current_skill.and_then(|id| self.registry.get(id)) {
             return Some(current);
         }
 
-        if (input.current_skill.is_none() || explicit_switch)
-            && input.awaiting_slots.is_empty()
-            && let Some(skill_id) = command_target(text)
-        {
+        if let Some(skill_id) = command_target(text) {
             return self.registry.get(skill_id);
         }
 
-        if !explicit_switch
-            && let Some(current) = input
-                .current_skill
-                .as_deref()
-                .and_then(|id| self.registry.get(id))
-        {
-            if !input.awaiting_slots.is_empty() {
-                return Some(current);
-            }
-            if current.id == "socratic_review"
-                && (is_socratic_followup(text)
-                    || is_selection_followup(text)
-                    || is_socratic_thinking_request(text))
-            {
-                return Some(current);
-            }
-        }
-
-        if let Some(skill) = self.strong_trigger(text) {
-            return Some(skill);
-        }
-        if input.current_skill.is_some()
-            && matches!(text, "1" | "2" | "3" | "4")
-            && input.collected_slots
-        {
-            return input
-                .current_skill
-                .as_deref()
-                .and_then(|id| self.registry.get(id));
+        if is_literature_reading_request(text) {
+            return self.registry.get("literature_reading");
         }
 
         if rejects_material_search(text) {
             if is_topic_refinement_request(text) {
                 return self.registry.get("socratic_review");
             }
-            if let Some(current_skill) = input.current_skill.as_deref()
-                && current_skill != "material_search"
-            {
-                return self.registry.get(current_skill);
+            if let Some(current) = current_skill.filter(|skill| *skill != "material_search") {
+                return self.registry.get(current);
             }
             return None;
         }
 
-        if let Some(socratic) = self.registry.get("socratic_review") {
-            if matches!(
-                input.current_skill.as_deref(),
-                Some("socratic_review" | "novelty_eval" | "material_search")
-            ) && !is_material_search_request(text)
-                && (is_material_source_answer(text) || is_topic_refinement_request(text))
-            {
-                return Some(socratic);
-            }
-            if input.current_skill.as_deref() == Some("socratic_review")
-                && (is_socratic_followup(text)
-                    || is_selection_followup(text)
-                    || is_socratic_thinking_request(text))
-            {
-                return Some(socratic);
-            }
-            if input.current_skill.as_deref() == Some("novelty_eval")
-                && (input.route_needs_socratic || has_candidate_paths(input))
-                && (is_socratic_followup(text) || is_selection_followup(text))
-            {
-                return Some(socratic);
-            }
-            if is_broad_topic_problem(text)
-                || is_topic_refinement_request(text)
-                || (!is_direct_evaluation_or_theory_request(text)
-                    && is_socratic_thinking_request(text))
-            {
-                return Some(socratic);
-            }
-        }
-
-        if let Some(alias) = self.alias_match(text) {
-            return Some(alias);
-        }
-        if let Some(current_skill) = input
-            .current_skill
-            .as_deref()
-            .and_then(|id| self.registry.get(id))
-            && (keyword_score(text, current_skill) > 0
-                || is_short_followup(text)
-                || is_selection_followup(text))
+        if matches!(
+            current_skill,
+            Some("socratic_review" | "novelty_eval" | "material_search")
+        ) && !is_material_search_request(text)
+            && (is_material_source_answer(text) || is_topic_refinement_request(text))
         {
-            return Some(current_skill);
+            return self.registry.get("socratic_review");
         }
-        self.best_keyword_match(text)
-    }
 
-    fn strong_trigger<'a>(&'a self, text: &str) -> Option<&'a SkillDefinition> {
-        if has_any(text, &["ppt", "课件", "老师讲过", "这节课"]) {
-            return self.registry.get("ppt_qa");
-        }
-        if is_literature_reading_request(text) {
-            return self.registry.get("literature_reading");
-        }
         if is_material_search_request(text) {
             return self
                 .registry
                 .get("material_search")
                 .or_else(|| self.registry.get("novelty_eval"));
         }
+
+        if is_inspiration_request(text) {
+            return self.registry.get("novelty_eval");
+        }
+
+        if explicit_switch
+            && previous_skill == Some("novelty_eval")
+            && has_candidate_paths(input)
+            && (is_selection_followup(text) || is_socratic_followup(text))
+        {
+            return self.registry.get("socratic_review");
+        }
+
+        if is_broad_topic_problem(text) {
+            return self.registry.get("socratic_review");
+        }
+        if is_topic_refinement_request(text) {
+            return self.registry.get("socratic_review");
+        }
+        if let Some(skill) = self.high_frequency_skill(text) {
+            return Some(skill);
+        }
+        if !is_direct_evaluation_or_theory_request(text) && is_socratic_thinking_request(text) {
+            return self.registry.get("socratic_review");
+        }
+
+        if let Some(alias) = self.alias_match(text) {
+            return Some(alias);
+        }
+        self.best_keyword_match(text)
+    }
+
+    fn high_frequency_skill<'a>(&'a self, text: &str) -> Option<&'a SkillDefinition> {
         for (matches, skill_id) in [
             (is_ai_boundary_request(text), "ai_use_boundary_qa"),
             (is_academic_norm_request(text), "academic_norm_check"),
@@ -213,7 +168,7 @@ fn build_decision(text: &str, input: &RouteInput, target_skill: Option<String>) 
         + f32::from(!stage.is_unknown()) * 0.15
         + f32::from(intent != "continue") * 0.10
         + f32::from(text.chars().count() >= 6) * 0.05)
-        .clamp(0.0, 1.0);
+        .clamp(0.0, 0.95);
     RouteDecision {
         stage,
         intent,
@@ -234,9 +189,30 @@ fn stage_for(text: &str, input: &RouteInput, target: Option<&str>) -> WritingSta
         Some("draft_diagnosis") | Some("writing_feedback") => WritingStage::DraftArgument,
         Some("course_policy_qa") | Some("ai_use_boundary_qa") => WritingStage::CoursePolicy,
         Some("academic_norm_check") => WritingStage::AcademicNorm,
-        Some("material_search") | Some("literature_reading") => WritingStage::Literature,
-        Some("socratic_review") | Some("novelty_eval") => WritingStage::Topic,
+        Some("material_search") => WritingStage::Literature,
         _ if has_any(text, &["文献", "资料", "搜索", "联网"]) => WritingStage::Literature,
+        _ if has_any(
+            text,
+            &[
+                "ai率",
+                "ai 率",
+                "ai使用",
+                "能不能用ai",
+                "隐私",
+                "引用格式",
+                "格式",
+            ],
+        ) =>
+        {
+            WritingStage::CoursePolicy
+        }
+        Some("socratic_review")
+            if (input.context_value("thinking_task").and_then(Value::as_str) == Some("选题")
+                || input.context_value("stage").and_then(Value::as_str) == Some("topic"))
+                && !is_explicit_method_request(text) =>
+        {
+            WritingStage::Topic
+        }
         _ if is_explicit_method_request(text) => WritingStage::Method,
         _ if has_any(text, &["理论", "概念框架", "框架", "硬套"]) => WritingStage::Theory,
         _ if has_any(
@@ -260,6 +236,7 @@ fn stage_for(text: &str, input: &RouteInput, target: Option<&str>) -> WritingSta
         {
             WritingStage::ResearchQuestion
         }
+        Some("socratic_review") | Some("novelty_eval") => WritingStage::Topic,
         _ => input
             .context_value("stage")
             .and_then(|value| value.as_str())
@@ -308,6 +285,20 @@ fn intent_for(text: &str, target: Option<&str>) -> String {
     }
     if has_any(text, &["能不能用", "规则", "要求", "隐私", "ai率", "格式"]) {
         return "policy_qa".into();
+    }
+    if matches!(
+        target,
+        Some(
+            "research_question_evaluator"
+                | "theory_fit_checker"
+                | "method_feasibility_checker"
+                | "draft_diagnosis"
+                | "course_policy_qa"
+                | "ai_use_boundary_qa"
+                | "academic_norm_check"
+        )
+    ) {
+        return "evaluate".into();
     }
     "continue".into()
 }
@@ -410,24 +401,17 @@ fn has_candidate_paths(input: &RouteInput) -> bool {
 fn has_any(text: &str, terms: &[&str]) -> bool {
     terms.iter().any(|term| text.contains(term))
 }
-fn is_short_followup(text: &str) -> bool {
+fn is_inspiration_request(text: &str) -> bool {
     matches!(
         text,
-        "是啊"
-            | "对"
-            | "对的"
-            | "都要"
-            | "直接回答"
-            | "你不能直接回答吗"
-            | "继续"
-            | "我现在不太清楚"
-            | "不太清楚"
-            | "我不太清楚"
-            | "不清楚"
-            | "还没想清楚"
-            | "没想清楚"
-            | "没思路"
+        "我不知道写啥"
+            | "不知道写啥"
+            | "我不知道写什么"
+            | "不知道写什么"
+            | "我没有啥灵感"
+            | "没有啥灵感"
             | "没灵感"
+            | "没有灵感"
     )
 }
 fn is_selection_followup(text: &str) -> bool {
@@ -512,14 +496,17 @@ fn is_material_search_request(text: &str) -> bool {
                 "有什么文献",
                 "哪些文献",
                 "有没有文献",
+                "文献可以找",
+                "给我文献",
                 "推荐文献",
                 "列文献",
             ],
-        ) || (text.contains("文献")
-            && has_any(
-                text,
-                &["找", "搜", "查", "有没有", "有什么", "推荐", "列", "链接"],
-            )))
+        ) || (has_any(text, &["资料", "链接"]) && has_any(text, &["找", "搜", "查", "检索"]))
+            || (text.contains("文献")
+                && has_any(
+                    text,
+                    &["找", "搜", "查", "有没有", "有什么", "推荐", "列", "链接"],
+                )))
 }
 
 fn rejects_material_search(text: &str) -> bool {
@@ -574,12 +561,16 @@ fn is_topic_refinement_request(text: &str) -> bool {
             text,
             &[
                 "细化选题",
+                "细化这个选题",
                 "怎么细化",
+                "怎么细化这个选题",
                 "选题思路",
                 "选题方向",
                 "具体方向",
                 "具体切口",
                 "怎么拆",
+                "题怎么拆",
+                "这个题怎么拆",
                 "怎么展开",
             ],
         )
@@ -596,17 +587,34 @@ fn is_socratic_thinking_request(text: &str) -> bool {
                 "面批",
                 "思路",
                 "动机",
+                "为什么值得写",
+                "为什么想写",
                 "选哪个",
                 "怎么选",
                 "文献综述",
+                "综述思路",
                 "修改方案",
                 "不知道怎么选题",
+                "怎么选题",
                 "细化",
+                "怎么细化",
+                "选题思路",
+                "选题方向",
                 "切口",
+                "好写",
+                "选题卡住",
                 "没灵感",
                 "没思路",
+                "不知道写啥",
+                "不知道写什么",
                 "想写",
+                "想要写",
+                "准备写",
+                "打算写",
                 "想研究",
+                "研究有关",
+                "研究关于",
+                "逻辑",
                 "为什么",
                 "导致",
             ],
@@ -630,9 +638,15 @@ fn is_socratic_thinking_request(text: &str) -> bool {
                 "修改",
                 "初稿",
                 "提纲",
+                "搭子",
+                "朋友",
+                "有关",
+                "关于",
                 "小组合作",
                 "合作",
                 "分工",
+                "搭便车",
+                "团队",
             ],
         )
 }
@@ -656,15 +670,18 @@ fn is_socratic_followup(text: &str) -> bool {
             "反方",
             "可以总结",
             "总结一下",
-            "换成",
-            "改成",
+            "面批前摘要",
             "不是",
             "当然是",
             "不好意思",
+            "抹不下脸",
+            "碍于面子",
             "不敢催",
             "不干活",
             "拖了进度",
+            "拖进度",
             "替他",
+            "替人",
             "默认选项",
             "好写",
             "细化",
@@ -701,6 +718,8 @@ fn is_broad_topic_problem(text: &str) -> bool {
                 "想讨论",
                 "我想研究",
                 "想研究",
+                "研究有关",
+                "研究关于",
                 "我想写",
                 "想写",
             ],

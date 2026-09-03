@@ -353,6 +353,123 @@ impl SessionStateData {
         }
         update
     }
+
+    pub fn update_from_user(
+        &mut self,
+        message: &str,
+        skill_id: Option<&str>,
+        collected: &Map<String, Value>,
+    ) -> ContextUpdate {
+        let previous_rounds = self.writing_context.socratic_rounds;
+        let previous_topic = self.writing_context.topic.clone();
+        let update = self.apply_user_message(message);
+        if skill_id != Some("socratic_review") {
+            self.writing_context.socratic_rounds = previous_rounds;
+        }
+
+        let topic = self.writing_context.topic.clone();
+        self.writing_context.extra.insert(
+            "latest_turn".to_owned(),
+            serde_json::json!({
+                "text": truncate_chars(message.trim(), 240),
+                "topic": topic,
+                "is_self_contained": topic.is_some() && extract_topic(message).is_some_and(|(_, explicit)| explicit),
+                "starts_new_topic": update.topic_changed,
+            }),
+        );
+        if skill_id == Some("socratic_review") {
+            if let Some(task) = collected.get("thinking_task").and_then(Value::as_str) {
+                self.writing_context
+                    .extra
+                    .insert("thinking_task".to_owned(), Value::String(task.to_owned()));
+            }
+            if self.writing_context.initial_idea.is_none()
+                && let Some(idea) = collected.get("initial_idea").and_then(Value::as_str)
+            {
+                self.writing_context.initial_idea = Some(truncate_chars(idea, 240));
+            }
+        }
+        if skill_id == Some("novelty_eval") {
+            let keywords = extract_search_keywords(message, &self.writing_context);
+            if !keywords.is_empty() && !is_literature_lookup_message(message) {
+                self.writing_context.extra.insert(
+                    "search_keywords".to_owned(),
+                    Value::Array(keywords.into_iter().map(Value::String).collect()),
+                );
+            }
+            if contains_any(message, &["文献", "理论", "材料", "论据", "资料"]) {
+                self.writing_context.extra.insert(
+                    "material_gap".to_owned(),
+                    Value::String("需要可核验的文献、理论或案例材料".to_owned()),
+                );
+            }
+        }
+        if update.topic_changed && previous_topic != self.writing_context.topic {
+            self.writing_context
+                .extra
+                .insert("thinking_task".to_owned(), Value::String("选题".to_owned()));
+        }
+        self.writing_context.context_summary = self.writing_context.build_context_summary();
+        update
+    }
+
+    pub fn update_after_reply(&mut self, reply: &str, skill_id: Option<&str>) {
+        if matches!(skill_id, Some("novelty_eval" | "socratic_review")) {
+            let options = extract_numbered_options(reply);
+            if !options.is_empty()
+                && reply_contains_thinking_options(reply)
+                && (skill_id == Some("novelty_eval")
+                    || (self.writing_context.candidate_paths.is_empty()
+                        && matches!(
+                            self.writing_context.thinking_stage,
+                            Some(FlowStage::CandidatePaths | FlowStage::Unknown(_))
+                        )))
+            {
+                self.writing_context.candidate_paths = options;
+            }
+        }
+        if skill_id == Some("socratic_review") {
+            let mut questions = extract_questions(reply);
+            if self.writing_context.thinking_stage == Some(FlowStage::EvidenceCheck)
+                && reply.contains("过程证据")
+            {
+                questions = vec!["补一个过程证据和一个反例，检验这个题目能不能站住。".to_owned()];
+            }
+            if self.writing_context.thinking_stage == Some(FlowStage::CandidatePaths) {
+                self.writing_context
+                    .extra
+                    .insert("unanswered_questions".to_owned(), Value::Array(Vec::new()));
+            } else if !questions.is_empty() {
+                let questions = questions.into_iter().take(3).collect::<Vec<_>>();
+                let history = self
+                    .writing_context
+                    .extra
+                    .entry("socratic_questions".to_owned())
+                    .or_insert_with(|| Value::Array(Vec::new()));
+                if let Some(history) = history.as_array_mut() {
+                    for question in &questions {
+                        if !history.iter().any(|item| item.as_str() == Some(question)) {
+                            history.push(Value::String(question.clone()));
+                        }
+                    }
+                    if history.len() > 10 {
+                        history.drain(..history.len() - 10);
+                    }
+                }
+                self.writing_context.extra.insert(
+                    "unanswered_questions".to_owned(),
+                    Value::Array(questions.into_iter().map(Value::String).collect()),
+                );
+            }
+            if reply.contains("面批前摘要") {
+                self.writing_context.extra.insert(
+                    "pre_conference_summary".to_owned(),
+                    Value::String(reply.to_owned()),
+                );
+            }
+        }
+        self.writing_context.context_summary = self.writing_context.build_context_summary();
+    }
 }
 
 impl WritingContext {
@@ -986,6 +1103,137 @@ fn append_unique(items: &mut Vec<String>, value: String, limit: usize) -> bool {
         items.drain(..items.len() - limit);
     }
     true
+}
+
+fn extract_search_keywords(message: &str, context: &WritingContext) -> Vec<String> {
+    let basis = [
+        Some(message),
+        context.topic.as_deref(),
+        context.selected_direction.as_deref(),
+        context.research_question.as_deref(),
+        context.extra.get("theory_entry").and_then(Value::as_str),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" ");
+    let mut keywords = Vec::new();
+    for (needle, keyword) in [
+        ("搭子", "搭子"),
+        ("朋友", "朋友关系"),
+        ("小组合作", "小组合作"),
+        ("分工", "分工不均"),
+        ("搭便车", "搭便车"),
+        ("团队", "团队合作"),
+        ("社会惰化", "社会惰化"),
+        ("友谊", "友谊"),
+        ("弱连接", "弱连接"),
+        ("弱关系", "弱连接"),
+        ("强连接", "强连接"),
+        ("社会交换", "社会交换理论"),
+        ("社会网络", "社会网络理论"),
+        ("情感支持", "情感支持"),
+        ("同伴关系", "同伴关系"),
+        ("青年社交", "青年社交"),
+        ("大学生", "大学生"),
+        ("AI", "AI写作"),
+        ("人工智能", "AI写作"),
+        ("学术自我效能", "学术自我效能"),
+        ("教育", "教育"),
+        ("精英", "精英教育"),
+        ("博弈", "博弈论"),
+    ] {
+        if basis.contains(needle) && !keywords.iter().any(|item| item == keyword) {
+            keywords.push(keyword.to_owned());
+        }
+    }
+    keywords.truncate(5);
+    keywords
+}
+
+fn is_literature_lookup_message(message: &str) -> bool {
+    contains_any(
+        &message.to_lowercase(),
+        &[
+            "文献",
+            "参考文献",
+            "资料",
+            "材料",
+            "上网",
+            "联网",
+            "搜索",
+            "搜一下",
+            "找一下",
+            "找一些",
+            "找找",
+            "查一下",
+            "检索",
+            "openalex",
+            "open alex",
+        ],
+    )
+}
+
+fn extract_numbered_options(reply: &str) -> Vec<CandidatePath> {
+    let mut options = Vec::new();
+    for line in reply.lines().map(str::trim) {
+        let Some((index, rest)) = line.split_once(['.', '、']) else {
+            continue;
+        };
+        if !matches!(
+            index.trim(),
+            "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
+        ) {
+            continue;
+        }
+        let title = rest
+            .split(['：', ':', '。'])
+            .next()
+            .unwrap_or_default()
+            .trim();
+        if title.chars().count() >= 2 {
+            options.push(CandidatePath {
+                index: index.trim().to_owned(),
+                title: title.chars().take(60).collect(),
+                ..CandidatePath::default()
+            });
+        }
+    }
+    options
+}
+
+fn reply_contains_thinking_options(reply: &str) -> bool {
+    contains_any(reply, &["候选", "方向", "路径", "核心问题", "可用材料"])
+}
+
+fn extract_questions(reply: &str) -> Vec<String> {
+    reply
+        .split_inclusive(['？', '?'])
+        .map(str::trim)
+        .filter(|part| part.ends_with('？') || part.ends_with('?'))
+        .map(|part| {
+            part.rsplit(['\n', '。'])
+                .next()
+                .unwrap_or(part)
+                .trim_start_matches(|character: char| {
+                    character.is_ascii_digit() || ".、：: -".contains(character)
+                })
+                .trim()
+                .to_owned()
+        })
+        .filter(|question| {
+            !contains_any(
+                question,
+                &[
+                    "核心问题",
+                    "这一路的核心",
+                    "研究问题",
+                    "解释：",
+                    "最适合收束成",
+                ],
+            )
+        })
+        .collect()
 }
 
 fn truncate_chars(value: &str, limit: usize) -> String {

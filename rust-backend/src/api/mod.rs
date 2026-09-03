@@ -1,8 +1,12 @@
+pub mod auth;
 pub mod dto;
 pub mod health;
 pub mod runs;
 pub mod sessions;
 pub mod settings;
+pub mod skills;
+pub mod student_access;
+pub mod teacher;
 
 use axum::{
     Json, Router,
@@ -18,9 +22,12 @@ use crate::{AppError, AppState};
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/chat", post(runs::chat))
+        .nest("/api/student/access", student_access::router())
         .nest("/api/runs", runs::router())
         .nest("/api/sessions", sessions::router())
         .nest("/api/settings", settings::router())
+        .nest("/api/skills", skills::router())
+        .nest("/api/teacher", teacher::router())
         .with_state(state)
 }
 
@@ -41,6 +48,13 @@ impl ApiError {
         Self::bad_request("invalid identifier")
     }
 
+    pub(crate) fn not_found(message: &'static str) -> Self {
+        Self {
+            status: StatusCode::NOT_FOUND,
+            message,
+        }
+    }
+
     pub(crate) fn payload_too_large(message: &'static str) -> Self {
         Self {
             status: StatusCode::PAYLOAD_TOO_LARGE,
@@ -58,6 +72,20 @@ impl ApiError {
     pub(crate) fn bad_gateway(message: &'static str) -> Self {
         Self {
             status: StatusCode::BAD_GATEWAY,
+            message,
+        }
+    }
+
+    pub(crate) fn unauthorized(message: &'static str) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            message,
+        }
+    }
+
+    pub(crate) fn forbidden(message: &'static str) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
             message,
         }
     }

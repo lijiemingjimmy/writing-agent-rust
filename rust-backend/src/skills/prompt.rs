@@ -175,7 +175,8 @@ impl PromptBuilder {
         let scaffold =
             socratic_strategy_scaffold(context.state, context.flow, context.user_message);
         let style = response_style(context.policies);
-        let (required_action, missing_slot) = flow_contract(context.flow);
+        let required_action = context.flow.required_action.as_str();
+        let missing_slot = context.flow.missing_slot.as_deref().unwrap_or("None");
         let mut messages = vec![ModelMessage::system(
             "你是清华大学“写作与沟通”课程智能学伴，正在做苏格拉底式写作追问。代码已经决定了本轮流程和边界；你只负责把它说得像真实助教。",
         )];
@@ -237,18 +238,6 @@ fn response_style(policies: &[GlobalPolicy]) -> String {
         "- 自然、具体、简洁，像真实助教。".to_owned()
     } else {
         rules.join("\n")
-    }
-}
-
-fn flow_contract(flow: &FlowDecision) -> (&'static str, &'static str) {
-    match flow.stage {
-        FlowStage::MotivationProbe => ("probe_motivation", "motivation_or_scene"),
-        FlowStage::CandidatePaths => ("offer_candidate_paths", "selected_path"),
-        FlowStage::ChoiceReflection => ("reflect_on_choice", "choice_reason"),
-        FlowStage::EvidenceCheck => ("check_evidence", "evidence_or_counterexample"),
-        FlowStage::RefinedAdvice => ("give_refined_advice", "None"),
-        FlowStage::SummaryReady => ("build_summary", "None"),
-        FlowStage::Unknown(_) => ("continue", "None"),
     }
 }
 

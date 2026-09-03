@@ -198,8 +198,8 @@ fn counterexample_clause_is_not_also_positive_evidence() {
     assert!(!update.evidence_added);
     assert!(context.evidence.is_empty());
     assert_eq!(context.counterexamples.len(), 1);
-    assert_eq!(decision.stage, FlowStage::EvidenceCheck);
-    assert!(!decision.ready_for_summary);
+    assert_eq!(decision.stage, FlowStage::SummaryReady);
+    assert!(decision.ready_for_summary);
 }
 
 #[test]
@@ -270,16 +270,66 @@ fn second_person_phrase_does_not_select_second_candidate() {
 }
 
 #[test]
-fn a_summary_request_cannot_skip_the_socratic_prerequisites() {
+fn an_explicit_summary_request_matches_the_python_summary_contract() {
     let mut context = WritingContext::default();
     let controller = ThinkingFlowController::new();
 
     context.apply_user_message("总结一下");
     let decision = controller.advance(&context, "总结一下");
 
-    assert_eq!(decision.stage, FlowStage::MotivationProbe);
-    assert_eq!(decision.prompt_kind, PromptKind::MotivationProbe);
-    assert!(!decision.ready_for_summary);
+    assert_eq!(decision.stage, FlowStage::SummaryReady);
+    assert_eq!(decision.prompt_kind, PromptKind::SummaryReady);
+    assert_eq!(decision.required_action, "build_summary");
+    assert_eq!(decision.allowed_response_kind, "summary");
+    assert!(decision.ready_for_summary);
+}
+
+#[test]
+fn thinking_flow_exposes_the_full_python_decision_contract() {
+    let mut context = WritingContext::from_legacy_json(json!({
+        "candidate_paths": [{"index":"2", "title":"理论脉络"}],
+        "thinking_task": "文献综述"
+    }))
+    .unwrap();
+    let controller = ThinkingFlowController::new();
+
+    let choice = controller.advance(&context, "第二个");
+    assert_eq!(choice.stage, FlowStage::ChoiceReflection);
+    assert_eq!(choice.required_action, "reflect_on_choice");
+    assert_eq!(choice.missing_slot.as_deref(), Some("choice_reason"));
+    assert_eq!(choice.allowed_response_kind, "question");
+    assert_eq!(choice.selected_option.as_deref(), Some("2"));
+
+    context.flow_stage = Some(FlowStage::ChoiceReflection);
+    let reason = controller.advance(&context, "因为它最能解释我的材料");
+    assert_eq!(reason.stage, FlowStage::EvidenceCheck);
+    assert_eq!(reason.required_action, "check_evidence");
+    assert_eq!(
+        reason.missing_slot.as_deref(),
+        Some("evidence_or_counterexample")
+    );
+}
+
+#[test]
+fn literature_and_revision_tasks_receive_task_specific_candidate_paths() {
+    let controller = ThinkingFlowController::new();
+    let literature = WritingContext::from_legacy_json(json!({
+        "thinking_task":"文献综述", "initial_idea":"我想做搭子研究综述", "motivation":"梳理研究脉络"
+    }))
+    .unwrap();
+    let literature_decision = controller.advance(&literature, "因为现有定义不一致");
+    assert_eq!(literature_decision.candidate_paths[0].title, "概念脉络");
+    assert_eq!(literature_decision.candidate_paths[1].title, "理论脉络");
+    assert_eq!(literature_decision.candidate_paths[2].title, "方法脉络");
+
+    let revision = WritingContext::from_legacy_json(json!({
+        "thinking_task":"修改方案", "initial_idea":"修改初稿", "motivation":"论证不够清楚"
+    }))
+    .unwrap();
+    let revision_decision = controller.advance(&revision, "因为文章结构很散");
+    assert_eq!(revision_decision.candidate_paths[0].title, "核心论点优先");
+    assert_eq!(revision_decision.candidate_paths[1].title, "证据链优先");
+    assert_eq!(revision_decision.candidate_paths[2].title, "结构功能优先");
 }
 
 #[test]
@@ -292,6 +342,7 @@ fn unsupported_claim_transitions_to_evidence_check() {
         "selected_direction": "互动机制方向",
         "selected_path_id": "1",
         "choice_reason": "因为能解释互动过程",
+        "flow_stage": "evidence_check",
         "core_claim": "夜话必然会增强宿舍关系"
     }))
     .unwrap();
@@ -308,7 +359,8 @@ fn legacy_selected_direction_without_candidates_still_asks_for_choice_reason() {
     let context = WritingContext::from_legacy_json(json!({
         "topic": "宿舍社交",
         "motivation": "我观察到宿舍夜话会影响关系",
-        "selected_direction": "互动机制方向"
+        "selected_direction": "互动机制方向",
+        "flow_stage": "choice_reflection"
     }))
     .unwrap();
 
@@ -324,7 +376,8 @@ fn legacy_selected_direction_and_reason_without_candidates_still_checks_evidence
         "topic": "宿舍社交",
         "motivation": "我观察到宿舍夜话会影响关系",
         "selected_direction": "互动机制方向",
-        "choice_reason": "这个方向能解释互动过程"
+        "choice_reason": "这个方向能解释互动过程",
+        "flow_stage": "evidence_check"
     }))
     .unwrap();
 
@@ -548,7 +601,12 @@ fn turn(
     message: &str,
 ) -> writing_coach_server::skills::FlowDecision {
     context.apply_user_message(message);
-    controller.advance(context, message)
+    let decision = controller.advance(context, message);
+    context.candidate_paths = decision.candidate_paths.clone();
+    context.thinking_stage = Some(decision.stage.clone());
+    context.flow_stage = Some(decision.stage.clone());
+    context.ready_for_refined_advice = decision.stage == FlowStage::RefinedAdvice;
+    decision
 }
 
 #[test]

@@ -2,7 +2,7 @@
 
 **写作主体性导师。WAM writes less, so the writer can think more.**
 
-面向《写作与沟通》课程场景的 Rust AI Agent。它不替学生交付成稿，而是通过苏格拉底式追问，把模糊兴趣推进为可论证的问题和学生自己的思维链条。Rust 服务负责 Skill 路由、写作状态推进、长对话记忆、输入安全、课程资料检索、模型调用、实时进度、取消、会话历史以及 Token/费用预算；React 只提供学生界面。
+面向《写作与沟通》课程场景的 Rust AI Agent。它不替学生交付成稿，而是通过苏格拉底式追问，把模糊兴趣推进为可论证的问题和学生自己的思维链条。Rust 服务负责 Skill 路由、写作状态推进、长对话记忆、输入安全、课程资料检索、模型调用、实时进度、取消、会话历史以及 Token/费用预算；同时兼容原学生端和教师端实际使用的 API Router。
 
 - 课程源码仓库：<https://git.tsinghua.edu.cn/rust-course/2026/agent/agent-lijm25>
 - 公开镜像：<https://github.com/lijiemingjimmy/writing-agent-rust>
@@ -62,6 +62,7 @@ npm run dev
 - 当前 Skill 默认保持，只有“切换分支：……”或“切换到……”才显式改道；
 - “形成思路”把现有上下文整理为选题、判断、概念、论证、材料与待核实事项，不调用模型；
 - 提示词窃取、凭据盗取、暴力/武器和自伤风险在路由及模型调用前由 Rust 确定性分流。
+- Python 当前的 student access、sessions、messages、documents、reports、skills 与 teacher dashboard Router 已由 Rust 原生实现；统计只读取 Rust 新数据库。
 
 ## 最短演示路径
 

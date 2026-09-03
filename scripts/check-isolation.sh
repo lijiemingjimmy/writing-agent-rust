@@ -42,8 +42,8 @@ escaping_link=$(find "$repo_root" -type l -not -path '*/.git/*' -not -path '*/ta
 [ -z "$escaping_link" ] || fail "symbolic link exists in deliverable: $escaping_link"
 
 scan_paths="README.md rust-backend/README.md rust-backend/config.example.toml rust-backend/src web/src web/package.json web/vite.config.ts skills"
-if rg -n 'VITE_TEACHER|/api/teacher|127\.0\.0\.1:8000|x-teacher-token|jiemingli\.top|lijiemingjimmy\.github\.io|/Users/lijieming|writing_coach\.db|语料/3\. 学生案例' $scan_paths >/dev/null; then
-  rg -n 'VITE_TEACHER|/api/teacher|127\.0\.0\.1:8000|x-teacher-token|jiemingli\.top|lijiemingjimmy\.github\.io|/Users/lijieming|writing_coach\.db|语料/3\. 学生案例' $scan_paths >&2
+if rg -n 'VITE_TEACHER|127\.0\.0\.1:8000|jiemingli\.top|lijiemingjimmy\.github\.io|/Users/lijieming|writing_coach\.db|语料/3\. 学生案例' $scan_paths >/dev/null; then
+  rg -n 'VITE_TEACHER|127\.0\.0\.1:8000|jiemingli\.top|lijiemingjimmy\.github\.io|/Users/lijieming|writing_coach\.db|语料/3\. 学生案例' $scan_paths >&2
   fail "runtime or frontend coupling marker found"
 fi
 

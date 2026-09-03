@@ -20,11 +20,12 @@ use crate::{
     agent::{RunSubscription, SessionPreparation, UserTurn},
     api::{
         ApiError,
+        auth::optional_student,
         dto::{ChatResponse, CreateRunResponse, RunRequest, RunResponse},
         parse_json, parse_optional_json,
     },
     domain::{RunEvent, RunId, RunStatus, SessionId},
-    store::sessions::MessageRepository,
+    store::{access::StudentAccessRepository, sessions::MessageRepository},
 };
 
 const MAX_STEPS: u32 = 32;
@@ -112,11 +113,43 @@ async fn run_events(
 
 pub(crate) async fn chat(
     State(state): State<AppState>,
+    headers: HeaderMap,
     payload: Result<Json<RunRequest>, JsonRejection>,
 ) -> Result<Json<ChatResponse>, ApiError> {
-    let request = parse_json(payload)?;
+    let mut request = parse_json(payload)?;
+    let requested_session = request.session_id.clone();
+    let principal = optional_student(state.pool.clone(), &headers).await?;
+    if let Some(principal) = &principal {
+        request.user_id = Some(principal.student_id.clone());
+        request.student_id = Some(principal.student_id.clone());
+        request.student_name = Some(principal.student_name.clone());
+        if let Some(session_id) = requested_session.as_deref() {
+            let session_id =
+                SessionId::parse_legacy(session_id).map_err(|_| ApiError::invalid_identifier())?;
+            if !StudentAccessRepository::new(state.pool.clone())
+                .owns_session(session_id, &principal.id)
+                .await?
+            {
+                return Err(ApiError::forbidden("session is not owned by this student"));
+            }
+        }
+    }
     let handle = start_run(&state, request).await?;
-    wait_terminal(&state, handle.run_id).await?;
+    if requested_session.is_none()
+        && let Some(principal) = &principal
+    {
+        StudentAccessRepository::new(state.pool.clone())
+            .bind_session(handle.session_id, &principal.id)
+            .await?;
+    }
+    finish_chat(&state, handle).await.map(Json)
+}
+
+pub(crate) async fn finish_chat(
+    state: &AppState,
+    handle: crate::agent::RunHandle,
+) -> Result<ChatResponse, ApiError> {
+    wait_terminal(state, handle.run_id).await?;
     let run = state.run_engine.get(handle.run_id).await?;
     match run.status {
         RunStatus::Completed => {}
@@ -131,7 +164,7 @@ pub(crate) async fn chat(
     }
 
     let run_id_hex = handle.run_id.to_legacy_hex();
-    let message = MessageRepository::new(state.pool)
+    let message = MessageRepository::new(state.pool.clone())
         .list_by_session(handle.session_id)
         .await?
         .into_iter()
@@ -171,16 +204,16 @@ pub(crate) async fn chat(
         .filter_map(Value::as_str)
         .map(str::to_owned)
         .collect();
-    Ok(Json(ChatResponse {
+    Ok(ChatResponse {
         session_id: handle.session_id.to_legacy_hex(),
         reply: message.content,
         current_skill,
         awaiting_slots,
         metadata: Value::Object(metadata),
-    }))
+    })
 }
 
-async fn start_run(
+pub(crate) async fn start_run(
     state: &AppState,
     request: RunRequest,
 ) -> Result<crate::agent::RunHandle, ApiError> {
