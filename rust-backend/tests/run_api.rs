@@ -277,7 +277,7 @@ max_cost_microusd = 5000000
             .json(
                 Method::POST,
                 "/api/runs",
-                json!({"message": "你好", "student_id": "20260001", "student_name": "张三"}),
+                json!({"message": "我没思路", "student_id": "20260001", "student_name": "张三"}),
             )
             .await;
         assert_eq!(status, StatusCode::ACCEPTED);
@@ -351,7 +351,7 @@ async fn synchronous_chat_exposes_the_synthesize_action_contract() {
         .json(
             Method::POST,
             "/api/chat",
-            json!({"message": "你好", "student_id": "2025010468", "student_name": "李捷铭"}),
+            json!({"message": "我没思路", "student_id": "2025010468", "student_name": "李捷铭"}),
         )
         .await;
     assert_eq!(status, StatusCode::OK);
@@ -649,7 +649,7 @@ async fn wait_style_chat_returns_legacy_shape_from_the_one_persisted_run() {
         .json(
             Method::POST,
             "/api/chat",
-            json!({"message": "你好", "user_id": "student-chat"}),
+            json!({"message": "我没思路", "user_id": "student-chat"}),
         )
         .await;
     assert_eq!(status, StatusCode::OK);
@@ -693,7 +693,7 @@ async fn chat_preserves_legacy_identity_updates_on_an_existing_session() {
         .json(
             Method::POST,
             "/api/chat",
-            json!({"message": "你好", "student_id": "old-id", "student_name": "旧名"}),
+            json!({"message": "我没思路", "student_id": "old-id", "student_name": "旧名"}),
         )
         .await;
     let session_id = first["session_id"].as_str().unwrap();
@@ -703,7 +703,7 @@ async fn chat_preserves_legacy_identity_updates_on_an_existing_session() {
             "/api/chat",
             json!({
                 "session_id": session_id,
-                "message": "你好",
+                "message": "我没思路",
                 "user_id": "new-id",
                 "student_name": "新名"
             }),
@@ -898,7 +898,9 @@ async fn session_transfer_round_trips_the_full_trajectory_with_new_foreign_keys(
     assert_eq!(export["source_session_id"], session_id);
     assert_eq!(export["messages"].as_array().unwrap().len(), 4);
     assert_eq!(export["documents"].as_array().unwrap().len(), 1);
-    assert_eq!(export["skill_events"].as_array().unwrap().len(), 1);
+    // Both no-model Socratic slot-question Runs record their selected skill, in addition to the
+    // explicit fixture event inserted above.
+    assert_eq!(export["skill_events"].as_array().unwrap().len(), 3);
     assert_eq!(export["runs"].as_array().unwrap().len(), 2);
     assert_eq!(export["runs"][0]["id"], run_id);
     assert_eq!(export["runs"][1]["id"], second_run_id);
@@ -927,7 +929,7 @@ async fn session_transfer_round_trips_the_full_trajectory_with_new_foreign_keys(
         .await;
     assert_eq!(imported_export["messages"].as_array().unwrap().len(), 4);
     assert_eq!(imported_export["documents"].as_array().unwrap().len(), 1);
-    assert_eq!(imported_export["skill_events"].as_array().unwrap().len(), 1);
+    assert_eq!(imported_export["skill_events"].as_array().unwrap().len(), 3);
     assert_eq!(imported_export["runs"].as_array().unwrap().len(), 2);
     assert_eq!(imported_export["model_calls"].as_array().unwrap().len(), 1);
     assert_eq!(

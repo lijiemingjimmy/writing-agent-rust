@@ -1,7 +1,6 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use async_trait::async_trait;
-use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use sqlx::SqlitePool;
 
@@ -9,11 +8,11 @@ use crate::{
     AppError,
     agent::{AgentAnswer, AgentProgram, RunContext, TurnAction, UserTurn},
     corpus::{markdown::MarkdownKnowledgeTool, session_documents::SessionDocumentKnowledgeTool},
-    domain::{FlowStage, RiskLevel, RouteDecision, RouteInput, SessionStateData, WritingStage},
-    llm::{ModelMessage, ModelRequest},
+    domain::{FlowStage, RiskLevel, RouteDecision, RouteInput, SessionStateData},
+    llm::ModelRequest,
     skills::{
-        GroundingGuard, GuardPolicy, PromptBuilder, PromptContext, SkillDefinition, SkillRegistry,
-        SkillRouter, ThinkingFlowController,
+        GeneralPromptContext, GroundingGuard, GuardPolicy, PromptBuilder, PromptContext,
+        SkillDefinition, SkillRegistry, SkillRouter, SocraticPromptContext, ThinkingFlowController,
     },
     store::{
         runs::WritingTurnSkillEvent,
@@ -29,9 +28,6 @@ use super::{
     conversation_memory::ConversationMemory,
     input_safety::{build_safety_response, classify_input},
 };
-
-const STRUCTURED_ROUTE_WARNING: &str =
-    "structured route decision was invalid; deterministic fallback used";
 
 pub struct WritingCoachProgram {
     sessions: SessionRepository,
@@ -99,58 +95,12 @@ impl WritingCoachProgram {
 
     async fn route(
         &self,
-        context: &RunContext,
+        _context: &RunContext,
         message: &str,
         state: &SessionStateData,
     ) -> Result<RouteDecision, AppError> {
         let route_input = route_input(message, state);
-        let deterministic = self.router.route(&route_input);
-        if deterministic.target_skill.is_some() {
-            return Ok(deterministic);
-        }
-
-        let request = ModelRequest {
-            messages: vec![
-                ModelMessage::system(
-                    "Choose one installed writing-coach skill. Return JSON only with target_skill, confidence, and reason. Do not answer the user.",
-                ),
-                ModelMessage::user(format!(
-                    "installed_skills={}\nlatest_user_message={}",
-                    self.registry
-                        .all()
-                        .map(|skill| skill.id.as_str())
-                        .collect::<Vec<_>>()
-                        .join(","),
-                    message.trim()
-                )),
-            ],
-            temperature: Some(0.0),
-        };
-        let raw = context.call_model("route_decision", request).await?;
-        let parsed = serde_json::from_str::<StructuredRoute>(&raw.content)
-            .ok()
-            .filter(|decision| {
-                decision.confidence.is_finite()
-                    && (0.0..=1.0).contains(&decision.confidence)
-                    && !decision.reason.trim().is_empty()
-                    && self.registry.get(&decision.target_skill).is_some()
-            });
-        let Some(parsed) = parsed else {
-            context
-                .emit(
-                    "decision.warning",
-                    json!({"message": STRUCTURED_ROUTE_WARNING}),
-                )
-                .await?;
-            return Ok(deterministic_fallback(message, state));
-        };
-
-        let mut decision = deterministic_fallback(message, state);
-        decision.stage = stage_for_skill(&parsed.target_skill);
-        decision.target_skill = Some(parsed.target_skill);
-        decision.confidence = parsed.confidence;
-        decision.reason = truncate_chars(parsed.reason.trim(), 240);
-        Ok(decision)
+        Ok(self.router.route(&route_input))
     }
 }
 
@@ -347,15 +297,68 @@ impl AgentProgram for WritingCoachProgram {
             return Ok(AgentAnswer::new(answer).with_metadata(metadata));
         }
 
-        if is_general_turn(&turn.content, &state) {
+        let (routing_message, explicit_switch) = routing_message(&turn.content);
+        if explicit_switch {
+            state.extra.remove("awaiting_slots");
+            state.extra.remove("collected_slots");
+        }
+        let previous_socratic_rounds = state.writing_context.socratic_rounds;
+        let context_update = state.apply_user_message(routing_message);
+        memory.refresh_confirmed_facts(&state);
+
+        Self::start_phase(&context, "route_skill").await?;
+        let route = self.route(&context, &turn.content, &state).await?;
+        Self::complete_phase(&context, "route_skill").await?;
+
+        if route.target_skill.is_none() {
+            state.writing_context.socratic_rounds = if context_update.topic_changed {
+                0
+            } else {
+                previous_socratic_rounds
+            };
             Self::start_phase(&context, "general_response").await?;
-            let answer = general_response(&turn.content);
+            let prompt = self.prompt_builder.build_general(GeneralPromptContext {
+                state: &state,
+                recent_messages: &memory.recent_messages,
+                durable_summary: memory.durable_summary.as_deref(),
+                confirmed_facts: &memory.confirmed_facts,
+                user_message: &turn.content,
+            });
+            let response = context
+                .call_model(
+                    "general_answer",
+                    ModelRequest {
+                        messages: prompt,
+                        temperature: Some(0.3),
+                    },
+                )
+                .await?;
+            let empty_knowledge = KnowledgeBundle::default();
+            let user_texts = memory
+                .recent_messages
+                .iter()
+                .filter(|message| message.role == "user")
+                .map(|message| message.content.clone())
+                .chain(std::iter::once(turn.content.clone()));
+            let guarded = self.grounding_guard.validate(
+                &response.content,
+                &empty_knowledge,
+                GuardPolicy::default().with_user_texts(user_texts),
+            );
+            state
+                .extra
+                .insert("awaiting_slots".to_owned(), Value::Array(Vec::new()));
+            state.extra.remove("last_question");
+            state.extra.insert(
+                "latest_request".to_owned(),
+                Value::String(turn.content.trim().to_owned()),
+            );
             let current_skill = state
                 .extra
                 .get("current_skill")
                 .and_then(Value::as_str)
-                .filter(|value| !value.is_empty());
-            let route = compatibility_route(&state, current_skill, "general_message");
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned);
             let metadata = json!({
                 "selected_skill": null,
                 "skill_id": current_skill,
@@ -365,13 +368,17 @@ impl AgentProgram for WritingCoachProgram {
                 "general_response": true,
                 "used_corpus_files": [],
                 "route_decision": route,
-                "student_progress": compatibility_progress(&state, &route, current_skill),
+                "student_progress": compatibility_progress(&state, &route, current_skill.as_deref()),
                 "used_web_search": false,
                 "search_requested": false,
                 "literature_search": idle_literature_search(),
                 "web_search": idle_web_search(web),
-                "guardrail_triggered": false,
-                "guardrail": {"allowed": true, "violations": []},
+                "guardrail_triggered": guarded.triggered,
+                "guardrail": {
+                    "allowed": guarded.allowed,
+                    "violations": guarded.violations,
+                    "grounding_valid": guarded.grounding_valid,
+                },
             });
             self.messages
                 .update_metadata(
@@ -387,29 +394,19 @@ impl AgentProgram for WritingCoachProgram {
                 .persist_terminal_writing_turn(
                     turn.session_id,
                     serde_json::to_value(&state).map_err(corrupt_json)?,
-                    answer,
+                    &guarded.answer,
                     metadata.clone(),
                     &[],
                     "general_response",
                 )
                 .await?;
-            return Ok(AgentAnswer::new(answer).with_metadata(metadata));
+            return Ok(AgentAnswer::new(guarded.answer).with_metadata(metadata));
         }
 
-        let (routing_message, explicit_switch) = routing_message(&turn.content);
-        if explicit_switch {
-            state.extra.remove("awaiting_slots");
-            state.extra.remove("collected_slots");
-        }
-        let context_update = state.apply_user_message(routing_message);
-        memory.refresh_confirmed_facts(&state);
-
-        Self::start_phase(&context, "route_skill").await?;
-        let route = self.route(&context, &turn.content, &state).await?;
         let skill_id = route
             .target_skill
             .as_deref()
-            .unwrap_or("socratic_review")
+            .expect("general turns returned before skill lookup")
             .to_owned();
         let skill = self
             .registry
@@ -426,10 +423,9 @@ impl AgentProgram for WritingCoachProgram {
                 }),
             )
             .await?;
-        Self::complete_phase(&context, "route_skill").await?;
 
         Self::start_phase(&context, "update_writing_context").await?;
-        let thinking_stage = if skill.id == "socratic_review" {
+        let flow_decision = if skill.id == "socratic_review" {
             let flow = self
                 .thinking_flow
                 .advance(&state.writing_context, routing_message);
@@ -437,10 +433,11 @@ impl AgentProgram for WritingCoachProgram {
             state.writing_context.thinking_stage = Some(flow.stage.clone());
             state.writing_context.flow_stage = Some(flow.stage.clone());
             state.writing_context.ready_for_refined_advice = flow.ready_for_summary;
-            Some(flow.stage)
+            Some(flow)
         } else {
             None
         };
+        let thinking_stage = flow_decision.as_ref().map(|flow| flow.stage.clone());
         let revision_comparison = update_revision_state(&mut state, routing_message);
         // The validated route owns the final stage for this turn. Context extraction may infer a
         // provisional stage, so apply it first and record the route last.
@@ -534,17 +531,29 @@ impl AgentProgram for WritingCoachProgram {
         Self::complete_phase(&context, "search_knowledge").await?;
 
         Self::start_phase(&context, "build_prompt").await?;
-        let prompt = self.prompt_builder.build(PromptContext {
-            policies: self.registry.policies(),
-            skill,
-            state: &state,
-            recent_messages: &memory.recent_messages,
-            durable_summary: memory.durable_summary.as_deref(),
-            confirmed_facts: &memory.confirmed_facts,
-            knowledge: &knowledge,
-            user_message: routing_message,
-            web_enabled,
-        });
+        let prompt = if let Some(flow) = flow_decision.as_ref() {
+            self.prompt_builder
+                .build_socratic_humanizer(SocraticPromptContext {
+                    policies: self.registry.policies(),
+                    skill,
+                    state: &state,
+                    flow,
+                    recent_messages: &memory.recent_messages,
+                    user_message: routing_message,
+                })
+        } else {
+            self.prompt_builder.build(PromptContext {
+                policies: self.registry.policies(),
+                skill,
+                state: &state,
+                recent_messages: &memory.recent_messages,
+                durable_summary: memory.durable_summary.as_deref(),
+                confirmed_facts: &memory.confirmed_facts,
+                knowledge: &knowledge,
+                user_message: routing_message,
+                web_enabled,
+            })
+        };
         Self::complete_phase(&context, "build_prompt").await?;
 
         Self::start_phase(&context, "call_model").await?;
@@ -553,7 +562,7 @@ impl AgentProgram for WritingCoachProgram {
                 "writing_coach_answer",
                 ModelRequest {
                     messages: prompt,
-                    temperature: Some(0.2),
+                    temperature: Some(if flow_decision.is_some() { 0.55 } else { 0.2 }),
                 },
             )
             .await?;
@@ -634,13 +643,6 @@ impl AgentProgram for WritingCoachProgram {
     }
 }
 
-#[derive(Deserialize)]
-struct StructuredRoute {
-    target_skill: String,
-    confidence: f32,
-    reason: String,
-}
-
 fn route_input(message: &str, state: &SessionStateData) -> RouteInput {
     let awaiting = awaiting_slots(state);
     let collected = state
@@ -672,27 +674,6 @@ fn awaiting_slots(state: &SessionStateData) -> Vec<String> {
         .filter_map(Value::as_str)
         .map(str::to_owned)
         .collect()
-}
-
-fn deterministic_fallback(message: &str, state: &SessionStateData) -> RouteDecision {
-    let stage = if state.writing_context.stage.is_unknown() {
-        WritingStage::Topic
-    } else {
-        state.writing_context.stage.clone()
-    };
-    RouteDecision {
-        stage,
-        intent: "clarify".to_owned(),
-        risk: RiskLevel::NeedsSocratic,
-        target_skill: Some("socratic_review".to_owned()),
-        confidence: 0.55,
-        reason: format!(
-            "规则无法确定唯一任务，先用写作追问澄清：{}",
-            truncate_chars(message.trim(), 48)
-        ),
-        required_context: vec!["motivation".to_owned()],
-        needs_socratic: true,
-    }
 }
 
 fn compatibility_route(
@@ -761,20 +742,6 @@ fn idle_web_search(state: WebTurnState) -> Value {
         "error": null,
         "results": [],
     })
-}
-
-fn stage_for_skill(skill: &str) -> WritingStage {
-    match skill {
-        "socratic_review" | "novelty_eval" => WritingStage::Topic,
-        "material_search" | "literature_reading" => WritingStage::Literature,
-        "research_question_evaluator" => WritingStage::ResearchQuestion,
-        "theory_fit_checker" => WritingStage::Theory,
-        "method_feasibility_checker" => WritingStage::Method,
-        "draft_diagnosis" | "writing_feedback" => WritingStage::DraftArgument,
-        "course_policy_qa" | "ai_use_boundary_qa" => WritingStage::CoursePolicy,
-        "academic_norm_check" => WritingStage::AcademicNorm,
-        _ => WritingStage::Unknown("unknown".to_owned()),
-    }
 }
 
 fn record_route(state: &mut SessionStateData, route: &RouteDecision) {
@@ -1201,36 +1168,6 @@ fn synthesize_writing_context(state: &SessionStateData) -> String {
 ## 材料建议\n\n优先整理：{evidence}。材料必须能够支撑机制判断，而不只是证明现象存在。\n\n\
 ## 待核实事项\n\n核实概念来源、材料代表性和反例；未确认的作者、理论和数据不要写成事实。"
     )
-}
-
-fn is_general_turn(message: &str, _state: &SessionStateData) -> bool {
-    let text = message.trim().to_ascii_lowercase();
-    matches!(
-        text.as_str(),
-        "你好"
-            | "你好！"
-            | "hi"
-            | "hello"
-            | "嗯"
-            | "嗯嗯"
-            | "哦"
-            | "好的"
-            | "谢谢"
-            | "你不能直接回答吗"
-            | "你不能直接回答吗？"
-    ) || contains_any(&text, &["天气", "电影", "游戏", "吃什么", "笑话"])
-}
-
-fn general_response(message: &str) -> &'static str {
-    if contains_any(message, &["天气", "电影", "游戏", "吃什么", "笑话"]) {
-        "我主要帮助你梳理写作任务、选题、材料、论证和修改。你可以把当前写作问题发给我。"
-    } else {
-        "你好，我是写作学伴。你可以告诉我作业要求、想法或卡住的地方。"
-    }
-}
-
-fn truncate_chars(value: &str, limit: usize) -> String {
-    value.chars().take(limit).collect()
 }
 
 fn corrupt_json(error: serde_json::Error) -> AppError {
