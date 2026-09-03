@@ -160,7 +160,7 @@ export function StudentChat() {
     }
   }
 
-  async function submit(text = input) {
+  async function submit(text = input, options: { action?: "synthesize" } = {}) {
     const trimmed = text.trim();
     if (!trimmed || runInFlightRef.current || restoring || loadingSession || transferBusy || documentBusy) return;
     const profile = currentProfile();
@@ -179,11 +179,13 @@ export function StudentChat() {
     setStopping(false);
     setFinalizing(false);
     setTransferError("");
-    setInput("");
-    setMessages((current) => [
-      ...current,
-      { id: `client-user-${generation}`, role: "user", content: trimmed }
-    ]);
+    if (!options.action) {
+      setInput("");
+      setMessages((current) => [
+        ...current,
+        { id: `client-user-${generation}`, role: "user", content: trimmed }
+      ]);
+    }
 
     try {
       const created = await createRun({
@@ -192,6 +194,7 @@ export function StudentChat() {
         student_id: profile.studentId,
         student_name: profile.name,
         message: trimmed,
+        action: options.action,
         enable_web_search: webSearchEnabled
       });
       if (!mountedRef.current || generation !== runGenerationRef.current) return;
@@ -233,6 +236,10 @@ export function StudentChat() {
       ]);
       requestAnimationFrame(() => composerRef.current?.focus());
     }
+  }
+
+  function synthesize() {
+    void submit("请根据当前对话形成完整思路。", { action: "synthesize" });
   }
 
   async function finalizeRun(
@@ -541,7 +548,7 @@ export function StudentChat() {
   return (
     <div className="student-shell">
       <aside className="chat-sidebar" aria-hidden={settingsOpen || undefined} inert={settingsOpen || undefined}>
-        <div className="brand-mark"><strong>写作与沟通</strong></div>
+        <div className="brand-mark"><strong>WAM · 写作主体性导师</strong></div>
         <button className="new-chat-button" onClick={newChat} disabled={busy}>
           <span>+</span>新建对话
         </button>
@@ -576,6 +583,7 @@ export function StudentChat() {
       <main className={`student-main ${messages.length ? "has-messages" : "is-empty"}`} aria-hidden={settingsOpen || undefined} inert={settingsOpen || undefined}>
         <nav className="student-run-actions" aria-label="会话工具">
           <button ref={settingsButtonRef} type="button" onClick={() => setSettingsOpen(true)} aria-haspopup="dialog" aria-controls="model-settings-dialog" aria-expanded={settingsOpen}>模型设置</button>
+          <button type="button" onClick={synthesize} disabled={!sessionId || !messages.length || busy}>形成思路</button>
           <button type="button" onClick={() => void handleExport()} disabled={!sessionId || busy}>导出会话</button>
           <label className={busy ? "disabled" : ""}>
             <span>导入 JSON</span>
@@ -689,7 +697,10 @@ function StudentIdentityEntry({ name, studentId, error, onNameChange, onStudentI
 
 function historyMessages(messages: HistoryMessage[]): Message[] {
   return messages
-    .filter((message) => message.role === "user" || message.role === "assistant")
+    .filter((message) =>
+      (message.role === "user" || message.role === "assistant")
+      && !(message.role === "user" && message.metadata_json.action === "synthesize")
+    )
     .map((message) => ({ id: message.id, role: message.role, content: message.content }));
 }
 

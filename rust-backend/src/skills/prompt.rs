@@ -15,6 +15,8 @@ pub struct PromptContext<'a> {
     pub skill: &'a SkillDefinition,
     pub state: &'a SessionStateData,
     pub recent_messages: &'a [Message],
+    pub durable_summary: Option<&'a str>,
+    pub confirmed_facts: &'a Map<String, Value>,
     pub knowledge: &'a KnowledgeBundle,
     pub user_message: &'a str,
     pub web_enabled: bool,
@@ -50,7 +52,20 @@ impl PromptBuilder {
             allowlisted_user_state(context.state, context.skill),
         ));
 
-        for message in context.recent_messages.iter().rev().take(8).rev() {
+        if let Some(summary) = context.durable_summary {
+            messages.push(untrusted_data_message(
+                "Durable conversation summary",
+                summary,
+            ));
+        }
+        if !context.confirmed_facts.is_empty() {
+            messages.push(untrusted_json_message(
+                "Confirmed writing facts",
+                Value::Object(context.confirmed_facts.clone()),
+            ));
+        }
+
+        for message in context.recent_messages {
             let content = truncate_chars(message.content.trim(), 600);
             match message.role.as_str() {
                 "assistant" | "user" => messages.push(untrusted_data_message(

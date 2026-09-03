@@ -13,25 +13,45 @@ impl SkillRouter {
     }
 
     pub fn route(&self, input: &RouteInput) -> RouteDecision {
-        let normalized = input.message.trim().to_lowercase();
+        let original = input.message.trim().to_lowercase();
+        let switch_payload = explicit_switch_payload(&original);
+        let normalized = switch_payload
+            .unwrap_or(original.as_str())
+            .trim()
+            .to_owned();
         let target = self
-            .select(&normalized, input)
+            .select(&normalized, input, switch_payload.is_some())
             .map(|skill| skill.id.clone());
         build_decision(&normalized, input, target)
     }
 
-    fn select<'a>(&'a self, text: &str, input: &RouteInput) -> Option<&'a SkillDefinition> {
-        if input.current_skill.is_none()
+    fn select<'a>(
+        &'a self,
+        text: &str,
+        input: &RouteInput,
+        explicit_switch: bool,
+    ) -> Option<&'a SkillDefinition> {
+        if !explicit_switch
+            && let Some(current) = input
+                .current_skill
+                .as_deref()
+                .and_then(|id| self.registry.get(id))
+        {
+            return Some(current);
+        }
+
+        if (input.current_skill.is_none() || explicit_switch)
             && input.awaiting_slots.is_empty()
             && let Some(skill_id) = command_target(text)
         {
             return self.registry.get(skill_id);
         }
 
-        if let Some(current) = input
-            .current_skill
-            .as_deref()
-            .and_then(|id| self.registry.get(id))
+        if !explicit_switch
+            && let Some(current) = input
+                .current_skill
+                .as_deref()
+                .and_then(|id| self.registry.get(id))
         {
             if !input.awaiting_slots.is_empty() {
                 return Some(current);
@@ -171,6 +191,14 @@ impl SkillRouter {
             .max_by_key(|(score, _)| *score)
             .map(|(_, skill)| skill)
     }
+}
+
+fn explicit_switch_payload(message: &str) -> Option<&str> {
+    ["切换分支", "切换到"].into_iter().find_map(|marker| {
+        message
+            .split_once(marker)
+            .map(|(_, payload)| payload.trim_start_matches(['：', ':', '，', ',', '。', ' ']))
+    })
 }
 
 fn build_decision(text: &str, input: &RouteInput, target_skill: Option<String>) -> RouteDecision {

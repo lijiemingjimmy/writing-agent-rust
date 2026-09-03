@@ -7,7 +7,7 @@ Deliver a self-contained Rust-controlled writing coach Agent without sharing Git
 ## Repository boundary
 
 - The repository root is `writing-coach-rust-agent` with its own `.git` directory.
-- The only permitted remote is `https://github.com/lijiemingjimmy/writing-agent-rust.git` until a Tsinghua Git remote is explicitly added.
+- The delivery remote is `git@git.tsinghua.edu.cn:rust-course/2026/agent/agent-lijm25.git`; the existing GitHub repository remains an optional public mirror.
 - The original `writing-coach-agent` repository is a read-only source of previously authored assets.
 - No database, SQLite sidecar, API key, absolute local path, Python runtime, GitHub Pages workflow, Mac mini configuration, or original Git history is copied.
 
@@ -33,7 +33,7 @@ Deliver a self-contained Rust-controlled writing coach Agent without sharing Git
 
 ## Acceptance criteria
 
-1. Git common directory is the new repository's own `.git` directory and exactly one worktree exists.
+1. Git common directory belongs to the standalone Rust repository; development worktrees may exist, but none may point to the original Python repository.
 2. No tracked file contains an old remote, old deployment target, local absolute path, Python runtime dependency, teacher API route, or original database name.
 3. Rust formatting, Clippy, all Rust tests, all Web tests, and the Web production build pass.
 4. The Rust server starts against a temporary fresh database and the student page renders without a Python process.

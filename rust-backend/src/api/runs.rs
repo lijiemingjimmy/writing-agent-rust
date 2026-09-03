@@ -195,12 +195,16 @@ async fn start_run(
         .or_else(|| clean(request.user_id.as_deref()))
         .map(str::to_owned);
     let student_name = clean(request.student_name.as_deref()).map(str::to_owned);
+    let mut turn = UserTurn::new(session_id, request.message)
+        .with_limits(MAX_STEPS, None, None)
+        .with_web_search(request.enable_web_search);
+    if let Some(action) = request.action {
+        turn = turn.with_action(action.as_str());
+    }
     Ok(state
         .run_engine
         .start_prepared(
-            UserTurn::new(session_id, request.message)
-                .with_limits(MAX_STEPS, None, None)
-                .with_web_search(request.enable_web_search),
+            turn,
             SessionPreparation {
                 create_session,
                 user_id,

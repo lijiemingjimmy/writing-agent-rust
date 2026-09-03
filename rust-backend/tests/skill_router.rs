@@ -125,8 +125,18 @@ fn routes_topic_uncertainty_to_socratic_review() {
 }
 
 #[test]
-fn explicit_ppt_question_wins_over_contextual_route() {
+fn active_skill_is_sticky_without_an_explicit_switch() {
     let input = RouteInput::new("PPT 里扎根理论是什么意思？")
+        .with_current_skill("socratic_review")
+        .with_writing_context(json!({"stage": "topic", "motivation": "课堂观察"}));
+    let decision = load_router().route(&input);
+
+    assert_eq!(decision.target_skill.as_deref(), Some("socratic_review"));
+}
+
+#[test]
+fn explicit_switch_can_replace_the_active_skill() {
+    let input = RouteInput::new("切换分支：PPT 里扎根理论是什么意思？")
         .with_current_skill("socratic_review")
         .with_writing_context(json!({"stage": "topic", "motivation": "课堂观察"}));
     let decision = load_router().route(&input);
@@ -249,14 +259,13 @@ fn awaiting_material_search_slot_keeps_contextual_continuation_on_rejection() {
 }
 
 #[test]
-fn material_source_answer_hands_material_search_context_to_socratic_review() {
+fn material_source_answer_stays_in_material_search_until_explicit_switch() {
     let input = RouteInput::new("我想用已有文献")
         .with_current_skill("material_search")
         .with_writing_context(json!({"stage": "topic", "motivation": "小组观察"}));
     let decision = load_router().route(&input);
 
-    assert_eq!(decision.target_skill.as_deref(), Some("socratic_review"));
-    assert!(decision.needs_socratic);
+    assert_eq!(decision.target_skill.as_deref(), Some("material_search"));
 }
 
 #[test]

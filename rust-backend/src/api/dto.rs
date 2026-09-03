@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{domain::Message, store::sessions::SessionSummary};
+use crate::{agent::TurnAction, domain::Message, store::sessions::SessionSummary};
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct RunRequest {
@@ -10,6 +10,7 @@ pub struct RunRequest {
     pub student_name: Option<String>,
     pub student_id: Option<String>,
     pub message: String,
+    pub action: Option<TurnAction>,
     #[serde(default)]
     pub enable_web_search: bool,
 }

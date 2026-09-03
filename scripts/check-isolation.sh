@@ -9,18 +9,21 @@ fail() {
   exit 1
 }
 
-[ -d "$repo_root/.git" ] || fail ".git must be a directory owned by this repository"
-
 git_dir=$(git -C "$repo_root" rev-parse --absolute-git-dir)
 common_relative=$(git -C "$repo_root" rev-parse --git-common-dir)
-common_dir=$(CDPATH= cd -- "$repo_root/$common_relative" && pwd -P)
-[ "$git_dir" = "$repo_root/.git" ] || fail "git directory escapes the repository"
-[ "$common_dir" = "$repo_root/.git" ] || fail "git common directory is shared"
+case "$common_relative" in
+  /*) common_dir=$(CDPATH= cd -- "$common_relative" && pwd -P) ;;
+  *) common_dir=$(CDPATH= cd -- "$repo_root/$common_relative" && pwd -P) ;;
+esac
+primary_root=$(git -C "$repo_root" worktree list --porcelain | awk 'index($0, "worktree ") == 1 { print substr($0, 10); exit }')
+primary_root=$(CDPATH= cd -- "$primary_root" && pwd -P)
+[ "$common_dir" = "$primary_root/.git" ] || fail "git common directory does not belong to the standalone Rust repository"
+case "$git_dir" in
+  "$common_dir"|"$common_dir"/worktrees/*) ;;
+  *) fail "git directory escapes the standalone Rust repository" ;;
+esac
 
-worktree_count=$(git -C "$repo_root" worktree list --porcelain | awk '$1 == "worktree" { count += 1 } END { print count + 0 }')
-[ "$worktree_count" -eq 1 ] || fail "expected exactly one worktree"
-
-bad_remote=$(git -C "$repo_root" remote -v | awk '{print $2}' | sort -u | grep -Ev '^(https://github\.com/lijiemingjimmy/writing-agent-rust(\.git)?|https://git\.tsinghua\.edu\.cn/.+)$' || true)
+bad_remote=$(git -C "$repo_root" remote -v | awk '{print $2}' | sort -u | grep -Ev '^(https://github\.com/lijiemingjimmy/writing-agent-rust(\.git)?|git@git\.tsinghua\.edu\.cn:lijm25/writing-agent-rust\.git|git@git\.tsinghua\.edu\.cn:rust-course/2026/agent/agent-lijm25\.git)$' || true)
 [ -z "$bad_remote" ] || fail "unexpected Git remote: $bad_remote"
 
 for forbidden_path in \

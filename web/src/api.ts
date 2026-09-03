@@ -28,6 +28,7 @@ export type CreateRunRequest = {
   student_name?: string | null;
   student_id?: string | null;
   message: string;
+  action?: "synthesize";
   enable_web_search?: boolean;
 };
 

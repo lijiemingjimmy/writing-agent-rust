@@ -8,6 +8,7 @@ test("keeps the student chat focused on history, conversation, and the composer"
   const source = await readFile(studentChatPath, "utf8");
 
   for (const requiredText of [
+    "WAM · 写作主体性导师",
     "新建对话",
     "历史对话",
     "有什么可以帮忙的？",
@@ -52,4 +53,14 @@ test("offers a bounded text or Markdown upload for the active Rust-backed sessio
   assert.match(source, /accept="\.txt,\.md,text\/plain,text\/markdown"/);
   assert.match(source, /disabled=\{!sessionId \|\| busy\}/);
   assert.match(source, /请先开始一次对话/);
+});
+
+test("offers an explicit synthesis action instead of pretending the button is a chat message", async () => {
+  const source = await readFile(studentChatPath, "utf8");
+
+  assert.match(source, />形成思路</);
+  assert.match(source, /action:\s*"synthesize"/);
+  assert.match(source, /disabled=\{!sessionId \|\| !messages\.length \|\| busy\}/);
+  assert.match(source, /if \(!options\.action\)/);
+  assert.match(source, /metadata_json\.action === "synthesize"/);
 });

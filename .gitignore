@@ -13,4 +13,5 @@ rust-backend/target/
 web/node_modules/
 web/dist/
 web/dist-teacher/
+output/
 writing-coach-session-*.json

@@ -7,7 +7,7 @@ use sqlx::SqlitePool;
 
 use crate::{
     AppError,
-    agent::{AgentAnswer, AgentProgram, RunContext, UserTurn},
+    agent::{AgentAnswer, AgentProgram, RunContext, TurnAction, UserTurn},
     corpus::{markdown::MarkdownKnowledgeTool, session_documents::SessionDocumentKnowledgeTool},
     domain::{FlowStage, RiskLevel, RouteDecision, RouteInput, SessionStateData, WritingStage},
     llm::{ModelMessage, ModelRequest},
@@ -23,6 +23,11 @@ use crate::{
         KnowledgeBundle, KnowledgeCoordinator, KnowledgePlan, PlannedSearch, SearchHit,
         SearchRequest,
     },
+};
+
+use super::{
+    conversation_memory::ConversationMemory,
+    input_safety::{build_safety_response, classify_input},
 };
 
 const STRUCTURED_ROUTE_WARNING: &str =
@@ -161,7 +166,18 @@ impl AgentProgram for WritingCoachProgram {
         Self::start_phase(&context, "accept_input").await?;
         let persisted = self.sessions.load_state(turn.session_id).await?;
         let mut state = SessionStateData::from_legacy_json(persisted.state_json)?;
-        let mut recent_messages = self.messages.list_by_session(turn.session_id).await?;
+        let recent_messages = self.messages.list_by_session(turn.session_id).await?;
+        let mut memory = ConversationMemory::from_messages(
+            &recent_messages,
+            &state,
+            Some(turn.content.as_str()),
+        );
+        if let Some(summary) = memory.durable_summary.as_ref() {
+            state.extra.insert(
+                "conversation_memory_summary".to_owned(),
+                Value::String(summary.clone()),
+            );
+        }
         let user_message = self
             .messages
             .add(
@@ -174,6 +190,119 @@ impl AgentProgram for WritingCoachProgram {
             )
             .await?;
         Self::complete_phase(&context, "accept_input").await?;
+
+        Self::start_phase(&context, "classify_input_safety").await?;
+        let safety = classify_input(&turn.content);
+        Self::complete_phase(&context, "classify_input_safety").await?;
+        if !safety.is_safe() {
+            Self::start_phase(&context, "safety_intercept").await?;
+            let answer = build_safety_response(safety)
+                .ok_or_else(|| AppError::InvalidRun("unsafe input has no response".to_owned()))?;
+            let current_skill = state
+                .extra
+                .get("current_skill")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty());
+            let route = compatibility_route(&state, current_skill, "safety_intercept");
+            let safety_metadata = json!({
+                "category": safety.category,
+                "severity": safety.severity,
+                "action": safety.action,
+                "reason_code": safety.reason_code,
+            });
+            let metadata = json!({
+                "skill_id": current_skill,
+                "selected_skill": current_skill,
+                "answer_type": "safety_response",
+                "awaiting_slots": awaiting_slots(&state),
+                "used_corpus_files": [],
+                "route_decision": route,
+                "student_progress": compatibility_progress(&state, &route, current_skill),
+                "safety": safety_metadata,
+                "used_web_search": false,
+                "search_requested": false,
+                "literature_search": idle_literature_search(),
+                "web_search": idle_web_search(web),
+                "guardrail_triggered": true,
+                "guardrail": {"allowed": false, "violations": [safety.reason_code]},
+            });
+            self.messages
+                .update_metadata(
+                    user_message.id,
+                    json!({
+                        "run_id": context.run_id().to_legacy_hex(),
+                        "skill_id": current_skill,
+                        "intent": "safety_intercept",
+                        "safety": safety_metadata,
+                    }),
+                )
+                .await?;
+            context
+                .persist_terminal_writing_turn(
+                    turn.session_id,
+                    serde_json::to_value(&state).map_err(corrupt_json)?,
+                    answer,
+                    metadata.clone(),
+                    &[],
+                    "safety_intercept",
+                )
+                .await?;
+            return Ok(AgentAnswer::new(answer).with_metadata(metadata));
+        }
+
+        if turn.action == Some(TurnAction::Synthesize) {
+            Self::start_phase(&context, "synthesize").await?;
+            state.apply_user_message(&turn.content);
+            let answer = synthesize_writing_context(&state);
+            state
+                .extra
+                .insert("awaiting_slots".to_owned(), Value::Array(Vec::new()));
+            state.extra.remove("last_question");
+            let current_skill = state
+                .extra
+                .get("current_skill")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty());
+            let route = compatibility_route(&state, current_skill, "synthesize");
+            let metadata = json!({
+                "skill_id": current_skill,
+                "selected_skill": current_skill,
+                "action": "synthesize",
+                "answer_type": "synthesis",
+                "awaiting_slots": [],
+                "used_corpus_files": [],
+                "route_decision": route,
+                "student_progress": compatibility_progress(&state, &route, current_skill),
+                "used_web_search": false,
+                "search_requested": false,
+                "literature_search": idle_literature_search(),
+                "web_search": idle_web_search(web),
+                "guardrail_triggered": false,
+                "guardrail": {"allowed": true, "violations": []},
+            });
+            self.messages
+                .update_metadata(
+                    user_message.id,
+                    json!({
+                        "run_id": context.run_id().to_legacy_hex(),
+                        "skill_id": current_skill,
+                        "intent": "synthesize",
+                        "action": "synthesize",
+                    }),
+                )
+                .await?;
+            context
+                .persist_terminal_writing_turn(
+                    turn.session_id,
+                    serde_json::to_value(&state).map_err(corrupt_json)?,
+                    &answer,
+                    metadata.clone(),
+                    &[],
+                    "synthesize",
+                )
+                .await?;
+            return Ok(AgentAnswer::new(answer).with_metadata(metadata));
+        }
 
         if is_reset_command(&turn.content) {
             Self::start_phase(&context, "reset_context").await?;
@@ -267,10 +396,13 @@ impl AgentProgram for WritingCoachProgram {
             return Ok(AgentAnswer::new(answer).with_metadata(metadata));
         }
 
-        let context_update = state.apply_user_message(&turn.content);
-        if context_update.topic_changed {
-            recent_messages.clear();
+        let (routing_message, explicit_switch) = routing_message(&turn.content);
+        if explicit_switch {
+            state.extra.remove("awaiting_slots");
+            state.extra.remove("collected_slots");
         }
+        let context_update = state.apply_user_message(routing_message);
+        memory.refresh_confirmed_facts(&state);
 
         Self::start_phase(&context, "route_skill").await?;
         let route = self.route(&context, &turn.content, &state).await?;
@@ -300,7 +432,7 @@ impl AgentProgram for WritingCoachProgram {
         let thinking_stage = if skill.id == "socratic_review" {
             let flow = self
                 .thinking_flow
-                .advance(&state.writing_context, &turn.content);
+                .advance(&state.writing_context, routing_message);
             state.writing_context.candidate_paths = flow.candidate_paths.clone();
             state.writing_context.thinking_stage = Some(flow.stage.clone());
             state.writing_context.flow_stage = Some(flow.stage.clone());
@@ -309,7 +441,7 @@ impl AgentProgram for WritingCoachProgram {
         } else {
             None
         };
-        let revision_comparison = update_revision_state(&mut state, &turn.content);
+        let revision_comparison = update_revision_state(&mut state, routing_message);
         // The validated route owns the final stage for this turn. Context extraction may infer a
         // provisional stage, so apply it first and record the route last.
         record_route(&mut state, &route);
@@ -318,7 +450,7 @@ impl AgentProgram for WritingCoachProgram {
         Self::start_phase(&context, "fill_required_slots").await?;
         let mut collected = collected_slots(&state);
         let awaited = awaiting_slots(&state);
-        fill_slots(skill, &turn.content, &awaited, &mut collected);
+        fill_slots(skill, routing_message, &awaited, &mut collected);
         if state.extra.get("latest_draft").is_none()
             && let Some(draft) = collected.get("draft_text").and_then(Value::as_str)
         {
@@ -388,7 +520,7 @@ impl AgentProgram for WritingCoachProgram {
         }
 
         Self::start_phase(&context, "decide_knowledge_use").await?;
-        let plan = knowledge_plan(skill, &turn.content, web_enabled, turn.session_id);
+        let plan = knowledge_plan(skill, routing_message, web_enabled, turn.session_id);
         Self::complete_phase(&context, "decide_knowledge_use").await?;
 
         Self::start_phase(&context, "search_knowledge").await?;
@@ -406,9 +538,11 @@ impl AgentProgram for WritingCoachProgram {
             policies: self.registry.policies(),
             skill,
             state: &state,
-            recent_messages: &recent_messages,
+            recent_messages: &memory.recent_messages,
+            durable_summary: memory.durable_summary.as_deref(),
+            confirmed_facts: &memory.confirmed_facts,
             knowledge: &knowledge,
-            user_message: &turn.content,
+            user_message: routing_message,
             web_enabled,
         });
         Self::complete_phase(&context, "build_prompt").await?;
@@ -426,7 +560,8 @@ impl AgentProgram for WritingCoachProgram {
         Self::complete_phase(&context, "call_model").await?;
 
         Self::start_phase(&context, "validate_grounding_and_guardrail").await?;
-        let user_texts = recent_messages
+        let user_texts = memory
+            .recent_messages
             .iter()
             .filter(|message| message.role == "user")
             .map(|message| message.content.clone())
@@ -1015,17 +1150,56 @@ fn is_direct_delivery_request(message: &str) -> bool {
 fn is_reset_command(message: &str) -> bool {
     matches!(
         message.trim().to_ascii_lowercase().as_str(),
-        "reset"
-            | "/reset"
-            | "exit"
-            | "quit"
-            | "退出"
-            | "结束"
-            | "停止"
-            | "重置"
-            | "清空"
-            | "重新开始"
-            | "换个任务"
+        "reset" | "/reset" | "重置" | "清空" | "重新开始" | "换个任务"
+    )
+}
+
+fn routing_message(message: &str) -> (&str, bool) {
+    for marker in ["切换分支", "切换到"] {
+        if let Some((_, payload)) = message.split_once(marker) {
+            return (
+                payload.trim_start_matches(['：', ':', '，', ',', '。', ' ']),
+                true,
+            );
+        }
+    }
+    (message.trim(), false)
+}
+
+fn synthesize_writing_context(state: &SessionStateData) -> String {
+    let writing = &state.writing_context;
+    let topic = writing
+        .topic
+        .as_deref()
+        .or(writing.initial_idea.as_deref())
+        .unwrap_or("当前写作方向");
+    let claim = writing
+        .core_claim
+        .as_deref()
+        .or(writing.confusion_point.as_deref())
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("围绕“{topic}”解释一个具体、可观察且存在争议的现象"));
+    let evidence = if writing.evidence.is_empty() {
+        "个人观察、访谈或可核验的公开材料".to_owned()
+    } else {
+        writing
+            .evidence
+            .iter()
+            .take(3)
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join("、")
+    };
+    format!(
+        "## 选题雏形\n\n{topic}\n\n\
+## 核心判断\n\n{claim}。写作重点是解释它如何发生、受什么条件影响，而不是只描述现象。\n\n\
+## 概念关系\n\n先界定核心概念，再区分相近概念，最后说明它们之间可能存在的机制关系。\n\n\
+## 论证路径\n\n1. 用具体场景界定现象和讨论范围。\n\
+2. 提出核心机制，并解释各环节如何连接。\n\
+3. 用支持材料和反例检验判断。\n\
+4. 说明判断成立的条件、边界及可能反驳。\n\n\
+## 材料建议\n\n优先整理：{evidence}。材料必须能够支撑机制判断，而不只是证明现象存在。\n\n\
+## 待核实事项\n\n核实概念来源、材料代表性和反例；未确认的作者、理论和数据不要写成事实。"
     )
 }
 

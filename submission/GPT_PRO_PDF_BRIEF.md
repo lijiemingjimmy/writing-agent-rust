@@ -1,8 +1,8 @@
-# Writing Agent Rust：设计 PDF 完整素材包
+# WAM — Writing Agency Mentor：设计 PDF 完整素材包
 
 > 用途：将本文件完整交给 GPT Pro，要求其在不虚构事实的前提下整理、排版并生成课程设计文档 PDF。
 >
-> 项目公开仓库：<https://github.com/lijiemingjimmy/writing-agent-rust>
+> 课程源码仓库：<https://git.tsinghua.edu.cn/rust-course/2026/agent/agent-lijm25>
 >
 > 课程作业要求：<https://lab.cs.tsinghua.edu.cn/rust/projects/agent/requirements/>
 
@@ -12,12 +12,12 @@
 
 生成时遵守以下约束：
 
-1. 不得虚构作者姓名、学号、课堂、开发人时、AI Token、AI 费用、清华 Git 地址、真实用户数量或线上部署地址。
+1. 作者信息固定为：李捷铭，2025010468，计53。不得虚构开发人时、AI Token、AI 费用、真实用户数量或线上部署地址。
 2. 所有标记为“生成 PDF 前由作者填写”的内容必须保留醒目标记，或先向作者提问。
 3. 可以重写表达和改善排版，但不得把“已实现”“计划实现”和“未提供”混在一起。
 4. 架构图优先把本文 Mermaid 图重绘为清晰的矢量图；表格和代码路径应保持可读。
 5. 设计文档要体现作者理解，而不是堆砌代码。重点解释为什么这样设计、Rust 在哪里发挥作用、场景定制为何优于通用聊天机器人。
-6. 不要把 GitHub 仓库误写成课程要求的清华 Git。清华 Git 地址未提供时，应明确列为交付前待办。
+6. 清华 Git 地址使用本文给出的课程源码仓库；GitHub 只写为公开镜像。
 
 ## 1. 生成 PDF 前由作者填写的信息
 
@@ -25,11 +25,11 @@
 
 | 项目 | 作者填写内容 |
 | --- | --- |
-| 姓名 | 【待填写】 |
-| 学号 | 【待填写】 |
-| 院系/班级/分课堂 | 【待填写】 |
+| 姓名 | 李捷铭 |
+| 学号 | 2025010468 |
+| 院系/班级/分课堂 | 计53 |
 | 项目开发起止日期 | 【待填写】 |
-| 清华 Git 仓库地址 | 【待创建并填写】 |
+| 清华 Git 仓库地址 | <https://git.tsinghua.edu.cn/rust-course/2026/agent/agent-lijm25> |
 | 最终演示所用模型与 Provider | 【待填写】 |
 | 实际开发人时 | 【待根据真实记录填写】 |
 | AI 调用次数、Token、费用 | 【待根据真实记录填写】 |
@@ -42,20 +42,21 @@
 
 | 项目 | 内容 |
 | --- | --- |
-| 项目名称 | Writing Agent Rust（写作与沟通智能学伴） |
+| 项目名称 | WAM — Writing Agency Mentor（写作主体性导师） |
 | 项目类型 | 高度场景定制的写作学习 AI Agent |
 | 服务场景 | 《写作与沟通》课程中的选题收窄、论证设计、资料检索、初稿诊断、同伴互评与学术规范检查 |
 | 核心后端 | Rust 2024 Edition |
 | 用户界面 | React + TypeScript + Vite 学生端 Web UI |
 | 数据存储 | 项目自有 SQLite 数据库 |
 | 实时通信 | HTTP + Server-Sent Events（SSE） |
-| 公开仓库 | <https://github.com/lijiemingjimmy/writing-agent-rust> |
+| 课程源码仓库 | <https://git.tsinghua.edu.cn/rust-course/2026/agent/agent-lijm25> |
+| 公开镜像 | <https://github.com/lijiemingjimmy/writing-agent-rust> |
 | 默认分支 | `main` |
 | 运行边界 | 不依赖 Python、旧项目数据库、旧 GitHub Pages 或 Mac mini |
 
 一句话介绍：
 
-> Writing Agent Rust 不是替学生写文章的通用聊天机器人，而是把课程写作方法、苏格拉底式追问、证据检查、课程资料检索和学术诚信边界固化进 Rust 工作流的写作学习 Agent。
+> WAM 不是替学生写文章的通用聊天机器人，而是把课程写作方法、苏格拉底式追问、证据检查、课程资料检索和学术诚信边界固化进 Rust 工作流的写作学习 Agent。
 
 ## 3. 选题与痛点分析
 
@@ -219,6 +220,23 @@ Markdown 检索支持中文 n-gram、英文 Token、稳定 glob 范围、标题�
 - `rust-backend/src/corpus/session_documents.rs`
 
 检索来源分为：课程 Markdown、学生当前会话上传的 TXT/Markdown、学术 Provider、通用 Web Provider。外部 Provider 可配置顺序、超时和 fallback；未安装、未配置或未获得同意时会明确记录“不可用/未尝试”，而不是假装联网成功。
+
+### 5.6 定制六：持久对话记忆、安全分流与一键形成思路
+
+实现位置：
+
+- `rust-backend/src/agent/conversation_memory.rs`
+- `rust-backend/src/agent/input_safety.rs`
+- `rust-backend/src/agent/writing_coach.rs`
+- `web/src/pages/StudentChat.tsx`
+
+长对话不再只截取末尾若干条：系统保留最近 12 条原消息，把更早历史逐条压缩后合并为约 6,000 字（截断时保留首尾各 3,000 字）的持久摘要，并将主题、动机、场景、选择理由、研究问题和核心论点等已确认事实单独注入 Prompt。这样既控制上下文成本，也避免早期关键事实在长会话中消失。
+
+路由采用“默认保持、显式切换”的原则。当前 Skill 不会因为一句话偶然出现“文献”或“PPT”就跳走；只有“切换分支：……”或“切换到……”才重新路由，同时保留已形成的写作上下文。
+
+“形成思路”不是又一次大模型生成，而是 Rust 根据当前结构化状态确定性组织出选题雏形、核心判断、概念关系、论证路径、材料建议和待核实事项。该动作不继续追问、不调用模型，也不增加 Token 费用。
+
+危险输入在 Skill 路由、资料检索和模型调用之前分类。提示词窃取、凭据盗取、性暴力、暴力犯罪、武器制作和自伤风险使用固定安全回复；同时保留“分析网络暴力”“账号被盗后如何保护”等正常写作/防护问题，避免简单关键词误杀。
 
 ## 6. 总体架构
 
@@ -742,6 +760,6 @@ bash scripts/verify-course.sh
 
 ## 24. 最终总结素材
 
-Writing Agent Rust 的核心贡献不是“用 Rust 包一层聊天 API”，而是把课程写作的学习流程转化为可执行、可检查、可恢复的 Agent 系统：Rust 状态机控制学生必须经历的思考步骤；Skill 和课程语料提供场景知识；Guardrail 防止代写和无来源断言；Run Engine 让进度、取消、Token、费用和终态成为可靠数据；完整轨迹导入导出让 Agent 的工作流程不再是黑盒。
+WAM 的核心贡献不是“用 Rust 包一层聊天 API”，而是把课程写作的学习流程转化为可执行、可检查、可恢复的 Agent 系统：Rust 状态机控制学生必须经历的思考步骤；Skill 和课程语料提供场景知识；Guardrail 防止代写和无来源断言；Run Engine 让进度、取消、Token、费用和终态成为可靠数据；完整轨迹导入导出让 Agent 的工作流程不再是黑盒。
 
 这套设计体现了 Rust 在所有权、异步、并发、错误边界、事务和工程化方面的价值，同时保留 React 作为成熟 UI 技术栈。它针对《写作与沟通》这一具体场景做了多项不可由通用 Agent 自动保证的定制，符合课程“真实、具体、至少两项专门优化”的核心要求。

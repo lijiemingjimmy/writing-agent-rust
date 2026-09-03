@@ -165,6 +165,22 @@ impl Drop for ControlledHarness {
     }
 }
 
+#[tokio::test]
+async fn run_creation_rejects_unknown_actions() {
+    let app = ControlledHarness::new(0).await;
+
+    let (status, error) = request_json(
+        app.app.clone(),
+        Method::POST,
+        "/api/runs",
+        json!({"message": "形成思路", "action": "unknown_action"}),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(error["error"], "invalid JSON request");
+}
+
 impl Harness {
     async fn new() -> Self {
         let database_path = std::env::temp_dir().join(format!(
@@ -326,6 +342,42 @@ async fn create_get_and_stream_run_progress_to_a_terminal_event() {
     assert_eq!(events.last().unwrap().event, "run.completed");
     assert!(events.windows(2).all(|pair| pair[0].id < pair[1].id));
     assert!(events.iter().all(|event| event.data["seq"] == event.id));
+}
+
+#[tokio::test]
+async fn synchronous_chat_exposes_the_synthesize_action_contract() {
+    let app = Harness::new().await;
+    let (status, first) = app
+        .json(
+            Method::POST,
+            "/api/chat",
+            json!({"message": "你好", "student_id": "2025010468", "student_name": "李捷铭"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, synthesis) = app
+        .json(
+            Method::POST,
+            "/api/chat",
+            json!({
+                "session_id": first["session_id"],
+                "message": "请根据当前对话形成完整思路。",
+                "action": "synthesize"
+            }),
+        )
+        .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(synthesis["metadata"]["action"], "synthesize");
+    assert!(synthesis["reply"].as_str().unwrap().contains("## 论证路径"));
+    assert_eq!(synthesis["awaiting_slots"], json!([]));
+    let run_id = synthesis["metadata"]["run_id"].as_str().unwrap();
+    let (status, run) = app.get_json(&format!("/api/runs/{run_id}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(run["input_tokens"], 0);
+    assert_eq!(run["output_tokens"], 0);
+    assert_eq!(run["cost_microusd"], 0);
 }
 
 #[tokio::test]
