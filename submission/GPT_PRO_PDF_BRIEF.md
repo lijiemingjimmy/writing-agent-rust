@@ -52,7 +52,7 @@
 | 课程源码仓库 | <https://git.tsinghua.edu.cn/rust-course/2026/agent/agent-lijm25> |
 | 公开镜像 | <https://github.com/lijiemingjimmy/writing-agent-rust> |
 | 默认分支 | `main` |
-| 运行边界 | 不依赖 Python、旧项目数据库、旧 GitHub Pages 或 Mac mini |
+| 技术实现 | 在原写作智能体基础上，以 Rust 重构 Agent 主控、状态管理与 API |
 
 一句话介绍：
 
@@ -96,7 +96,7 @@
 - 长任务实时显示步骤、Token、费用和终态，并允许取消。
 - 保存消息、状态、Skill 事件、Run 事件、工具来源和模型调用记录。
 - 会话可导出为完整 JSON，也可重新导入并检查历史 Run 轨迹。
-- 数据库、Git、前端和运行环境与旧 Python 项目完全隔离。
+- Rust 版本延续原项目的产品逻辑与前端交互，并使用课程演示配置和数据完成验收。
 
 ### 4.2 明确非目标
 
@@ -575,7 +575,7 @@ bash scripts/verify-course.sh
 - Rust 1.85 或更新版本。
 - Node.js 22 或更新版本。
 - 一个 OpenAI、DeepSeek 或 OpenAI-compatible 模型 Endpoint。
-- 不需要 Python、旧项目数据库或外部部署服务。
+- Rust 1.85、Node.js 22 和一个可用的模型 Endpoint。
 
 ### 16.2 启动 Rust
 
@@ -634,7 +634,7 @@ bash scripts/verify-course.sh
 - 开源依赖列在 `Cargo.lock` 与 `package-lock.json`，主要 crate/package 已在 `THIRD_PARTY.md` 说明。
 - 项目复用了作者此前项目中的学生端界面、Skill 配置、课程语料组织方式和部分业务测试思路。
 - Rust Agent 主控、Run 生命周期、取消、Token/费用、会话轨迹与 Rust API 是本课程仓库的实现主体。
-- 没有复制旧 Git 历史、Python 服务、教师端、原数据库、真实用户数据或旧部署配置。
+- 项目与原写作智能体的继承关系、复用资产和 Rust 重构范围均已如实披露。
 - AI 辅助开发受到课程鼓励，但作者必须理解并能解释提交的每一行 Rust 代码。
 - AI 对话历史必须提交真实原始记录，不得用本文伪造对话、时间戳、Token 或费用。
 

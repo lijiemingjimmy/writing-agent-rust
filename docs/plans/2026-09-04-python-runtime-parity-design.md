@@ -2,9 +2,9 @@
 
 ## 目标
 
-以 `writing-coach-agent/.worktrees/context-security-integration` 的实际工作树为行为基准：包括 `31f2d5d` 及工作树中尚未提交但已由用户认可的 `domain_boundary.py`、`chat_service.py` 和对应回归测试。在独立 Rust 仓库中实现同等的学生会话运行时，以及当前学生端和教师端前端实际调用的 HTTP Router。
+以 `writing-coach-agent/.worktrees/context-security-integration` 的实际工作树为行为基准：包括 `31f2d5d` 及工作树中尚未提交但已由用户认可的 `domain_boundary.py`、`chat_service.py` 和对应回归测试。项目在原系统基础上使用 Rust 实现同等的学生会话运行时，以及当前学生端和教师端前端实际调用的 HTTP Router。
 
-这里的“完整”指学生在一次或多轮对话中可观察到的 Agent 行为完整，而不是复制 Python 技术栈。Rust 继续独立构建、独立存储、独立运行，不导入 Python 模块，也不读取原数据库或真实用户数据。
+这里的“完整”指学生在一次或多轮对话中可观察到的 Agent 行为完整。实现既延续原项目的产品逻辑与既有资产，也将 Agent 主控、状态管理和服务接口重构为 Rust。
 
 ## 保持不变的隔离边界
 
@@ -56,7 +56,7 @@
 - 多轮对话能保持主题，识别纠正与换题，生成候选路径，解析选择，追问理由，再检查证据。
 - 普通闲聊不污染 `socratic_rounds`；材料检索不经过生成式回答。
 - 模型知识决策可压制关键词触发；决策失败时仍能用回退策略完成回复。
-- Rust 全量测试、Clippy、前端测试与构建通过；Python 服务停止时 Rust 可独立运行。
+- Rust 全量测试、Clippy、前端测试、生产构建和端到端演示通过。
 - 隔离脚本通过，最终只推送课程 GitLab remote。
 - 当前 Python 前端实际调用的 Router 在 Rust 中均有兼容端点和合同测试。
 - Python 前端的 `response_mode: synthesize` 必须立即形成思路且不继续追问。

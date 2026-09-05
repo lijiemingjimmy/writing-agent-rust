@@ -1,6 +1,6 @@
 # 当前 Python → Rust 等价矩阵
 
-基准：`writing-coach-agent/.worktrees/context-security-integration` 当前实际工作树（`31f2d5d` 加领域边界未提交改动）。Rust 实现不导入 Python 模块，不读取原数据库。
+基准：`writing-coach-agent/.worktrees/context-security-integration` 当前实际工作树（`31f2d5d` 加领域边界未提交改动）。Rust 版本以这一产品逻辑和可观察行为作为迁移基准。
 
 ## 会话运行时
 

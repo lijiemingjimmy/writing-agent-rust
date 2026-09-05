@@ -17,7 +17,8 @@
 - Node.js 22 或更新版本
 - 一个 OpenAI、DeepSeek 或 OpenAI-compatible 模型 Endpoint
 
-不需要 Python、原项目数据库或外部部署服务。
+项目在原有写作智能体的产品逻辑和既有资产基础上，以 Rust 重构核心 Agent
+运行时，并提供本课程项目的配置、演示数据与启动方式。
 
 ## 启动 Rust 服务
 

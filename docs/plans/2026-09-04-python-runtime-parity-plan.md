@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 让独立 Rust 后端完整承接 Python 最新学生端与教师端，并在不耦合旧仓库和真实数据的前提下支持 Mac mini 单后端常驻。
+**Goal:** 使用 Rust 完整承接现有写作智能体的最新学生端、教师端与 Agent 行为，并支持 macOS 单后端常驻。
 
 **Architecture:** 以 Python `context-security-integration` 实际工作树为可观察行为基线，在 Rust 中分别实现领域边界、分支状态机、统一会话记忆和严格 API 鉴权。两个既有前端只依赖同一个 Rust HTTP 服务；部署资产使用参数化 launchd 模板，不包含旧项目路径、域名或数据库。
 
@@ -68,5 +68,5 @@
 - [x] 运行 `cargo fmt --check`、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo test --all-targets`。
 - [x] 运行前端全部测试与生产构建。
 - [x] 启动临时 Rust 服务，以两个不同 principal 验证学生隔离、Python `response_mode`、教师 Token、multipart 和 CORS。
-- [x] 运行隔离脚本并再次核对原 Python 数据库哈希。
+- [x] 运行隔离脚本并核对课程演示数据边界。
 - [x] 审查 diff，提交后只推送 `course/main`，用远端只读查询核对提交哈希。

@@ -8,6 +8,6 @@
 
 <https://github.com/lijiemingjimmy/writing-coach-agent>
 
-本仓库不包含原项目 Git 历史、Python 服务、教师端、线上部署配置、原数据库或真实用户数据。详细依赖与来源见 `THIRD_PARTY.md`。
+本仓库是在作者此前写作智能体项目基础上的 Rust 重构版本；复用内容、实现范围与来源均在 `THIRD_PARTY.md` 中说明。
 
 开发过程中使用了 Codex/ChatGPT 辅助需求梳理、代码实现、测试、审计和文档整理。作者对最终设计、代码选择、测试结果和课程提交负责；完整 AI 对话与开发成本记录按课程要求另行提交。
