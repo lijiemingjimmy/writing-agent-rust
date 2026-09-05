@@ -151,7 +151,7 @@ motivation_probe
 - `rust-backend/src/corpus/markdown.rs`
 - `skills/`
 - `corpus/`
-- `语料/`
+- `语料/`（课程原始语料，仅保存在作者本地，暂未开源）
 
 系统加载 YAML Skill，根据触发词、当前上下文、待填槽位和显式用户意图选择课程能力。当前 Skill 包括：
 
@@ -621,7 +621,8 @@ bash scripts/verify-course.sh
 | `web/src/` | 学生端 UI、API 客户端与 Run 状态 |
 | `web/scripts/` | Web 逻辑与边界测试 |
 | `skills/` | 课程 Skill YAML |
-| `corpus/` / `语料/` | 合成样例与课程 Markdown |
+| `corpus/` | 可公开的合成检索样例 |
+| `语料/` | 本地课程原始语料，因授权限制暂未开源 |
 | `scripts/check-isolation.sh` | 独立仓库与数据边界审计 |
 | `scripts/verify-course.sh` | 一键完整验收 |
 | `THIRD_PARTY.md` | 依赖与复用来源说明 |
@@ -646,7 +647,7 @@ bash scripts/verify-course.sh
 3. 当前 Web 是本地运行的学生端，没有包含教师端或生产部署工作流。
 4. 外部学术和 Web Provider 需要单独配置，网络不可用时会降级到本地资料。
 5. SQLite 适合课程单机演示；多机部署需要换用共享数据库并重新设计锁和迁移策略。
-6. 课程语料发布前应由作者确认拥有公开使用权限。
+6. 课程原始语料涉及授权限制，只保存在作者本地，当前版本暂未开源。
 7. 正式清华 Git、AI 原始对话和真实开发成本数据尚需作者补充。
 
 ## 20. 可选后续改进
@@ -705,7 +706,7 @@ bash scripts/verify-course.sh
 - [x] GitHub 公开仓库可访问：<https://github.com/lijiemingjimmy/writing-agent-rust>
 - [x] 根 README 包含编译、配置和运行方法。
 - [x] `Cargo.lock` 和 `package-lock.json` 已提交。
-- [x] Rust、Web、Skill、语料、迁移和测试已提交。
+- [x] Rust、Web、Skill、合成语料、迁移和测试已提交；课程原始语料暂未开源。
 - [x] 第三方依赖和复用来源有说明。
 - [x] 不包含数据库、密钥、真实用户数据和旧部署配置。
 - [ ] 创建清华 Git 仓库并填写地址。

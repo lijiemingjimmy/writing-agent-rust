@@ -7,6 +7,10 @@
 - 课程源码仓库：<https://git.tsinghua.edu.cn/rust-course/2026/agent/agent-lijm25>
 - 公开镜像：<https://github.com/lijiemingjimmy/writing-agent-rust>
 
+> **语料说明：**课程原始语料涉及授权限制，暂未开源，仅保存在作者本地。仓库保留
+> Skill、检索实现和可公开的合成样例；将私有 `语料/` 目录放在仓库根目录后即可启用
+> 完整课程资料检索。该目录已被 Git 忽略，不影响其余功能的编译、测试和运行。
+
 ## 环境
 
 - Rust 1.85 或更新版本（edition 2024）

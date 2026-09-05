@@ -15,3 +15,6 @@ web/dist/
 web/dist-teacher/
 output/
 writing-coach-session-*.json
+
+# Private course materials are kept locally and are not distributed.
+语料/

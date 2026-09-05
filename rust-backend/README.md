@@ -14,6 +14,10 @@ cargo run --manifest-path rust-backend/Cargo.toml
 
 未设置 `WRITING_COACH_CONFIG` 时读取 `rust-backend/config.toml`。`database_url` 默认指向课程项目自己的新数据库；`skill_root` 和 `corpus_root` 相对进程当前目录解析。
 
+课程原始语料暂未开源，只保存在作者本地并由根目录 `.gitignore` 排除。公开仓库中的
+Skill 和检索模块在缺少私有 `语料/` 时仍可加载；放回本地目录后会自动匹配相应 Markdown。
+`corpus/` 仅包含可公开的合成测试样例。
+
 真实 Key 只从 `model.api_key_env` 指定的环境变量或设置 API 的进程内临时值读取，不写入配置、SQLite、日志、SSE 或导出文件。
 
 ## 主要路由
