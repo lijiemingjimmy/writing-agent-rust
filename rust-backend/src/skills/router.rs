@@ -328,10 +328,29 @@ fn risk_for(stage: &WritingStage, intent: &str, text: &str, input: &RouteInput) 
     {
         return RiskLevel::NeedsContext;
     }
-    if has_any(text, &["帮我写", "直接写", "替我写", "完整"]) {
+    if is_ghostwriting_request(text) {
         return RiskLevel::GhostwritingRisk;
     }
     RiskLevel::DirectOk
+}
+
+fn is_ghostwriting_request(text: &str) -> bool {
+    has_any(
+        text,
+        &[
+            "替我写",
+            "直接写",
+            "生成全文",
+            "完整范文",
+            "写完整",
+            "直接提交",
+            "交作业",
+        ],
+    ) || (text.contains("帮我写")
+        && has_any(text, &["作文", "论文", "报告", "作业", "正文", "段落"]))
+        || (text.contains("完整")
+            && has_any(text, &["作文", "论文", "报告", "作业", "正文", "段落"])
+            && has_any(text, &["写", "生成", "改写", "完成"]))
 }
 
 fn required_context_for(stage: &WritingStage, intent: &str, input: &RouteInput) -> Vec<String> {

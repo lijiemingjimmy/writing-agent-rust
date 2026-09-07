@@ -1,6 +1,6 @@
 # 当前 Python → Rust 等价矩阵
 
-基准：`writing-coach-agent/.worktrees/context-security-integration` 当前实际工作树（`31f2d5d` 加领域边界未提交改动）。Rust 版本以这一产品逻辑和可观察行为作为迁移基准。
+基准：本机 `writing-coach-agent` 当前实际工作树（检查时 HEAD 为 `71f51dd`）。Python 仓库始终只读；Rust 版本以其产品逻辑和可观察行为作为迁移基准。`rust-backend/tests/fixtures/python_parity_cases.json` 固化高频路由样例，`scripts/check_skill_parity.py` 只读比较 17 个公开 Skill YAML。
 
 ## 会话运行时
 
@@ -28,6 +28,7 @@
 | `/api/sessions`、`/{id}` | 同路径 | 已实现 |
 | `/api/sessions/{id}/messages` GET/POST | 同路径 | 已实现 |
 | `/api/sessions/{id}/documents` | 同路径 | 已实现；同时接受 multipart 与 Rust 前端原始文本协议 |
+| 会话资料列表与删除 | `GET/DELETE /api/sessions/{id}/documents...` | Rust 增强：按 principal 鉴权，显示索引状态，删除文档时级联删除片段 |
 | `/api/sessions/{id}/report` | 同路径 | 已实现 |
 | `/api/skills`、`/{id}`、`/reload` | 同路径 | 列表只公开安全字段；详情/reload 受教师鉴权 |
 | `/api/teacher/stats`、`students`、详情与删除 | 同路径 | 已实现 |
@@ -35,6 +36,19 @@
 | 教师 `analyze-upload`、`pre-conference*` | 同路径 | 已实现 |
 
 Rust 额外保留 `/api/runs`、SSE、取消、预算、模型设置和会话轨迹导入导出，这是课程作业的 Rust Agent 增强功能。
+
+## 会话资料与反馈改进
+
+| 行为 | Rust 实现 | 验收口径 |
+| --- | --- | --- |
+| 上传 TXT/Markdown | `corpus/chunking.rs` + `DocumentRepository::add_with_chunks` | 文档与有界片段事务化写入，响应返回 `ready` 和片段数 |
+| 所有 Skill 检索 | `writing_coach.rs::knowledge_plan` | 不再只限初稿诊断/写作反馈；模糊追问会组合写作上下文与最近消息 |
+| Socratic 使用资料 | `skills/prompt.rs` | 与普通 Prompt 共用可引用的 untrusted evidence，不允许资料覆盖指令 |
+| 可见来源 | answer metadata + StudentChat | 显示文件名、标题、chunk id；不暴露正文、数据库路径或服务器绝对路径 |
+| 导入恢复 | `SessionRepository::import_v1` | 根据导出正文重新分块，不复用本机索引或旧数据库 |
+| 超长输入 | `ContextCapacityExceeded` | 显示预计 token、上下文上限和明确恢复方法 |
+
+有一处有意改进：同学反馈候选方向经常重叠，“只选一个”会让对话机械化。因此 Rust 的 Socratic 规则允许组合方向和开放回答，每轮只追问一个最有信息价值的问题；`check_skill_parity.py` 将这处已记录的教学策略差异列为允许项。私有学生案例路径统一映射到公开 `corpus/examples/*.md`，真实课程语料仍不进入仓库。
 
 ## 本轮确认的旧矩阵遗漏
 

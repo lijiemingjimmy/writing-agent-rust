@@ -102,6 +102,10 @@ impl From<AppError> for ApiError {
             AppError::NotFound(_) => (StatusCode::NOT_FOUND, "resource not found"),
             AppError::InvalidExport(_) => (StatusCode::BAD_REQUEST, "invalid session export"),
             AppError::InvalidRun(_) => (StatusCode::BAD_REQUEST, "invalid run request"),
+            AppError::ContextCapacityExceeded { .. } => (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "input exceeds model context capacity",
+            ),
             AppError::ActiveRunConflict => {
                 (StatusCode::CONFLICT, "session already has an active run")
             }

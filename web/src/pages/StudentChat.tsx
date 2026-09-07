@@ -7,9 +7,11 @@ import {
   cancelRun,
   clearStudentAccess,
   createRun,
+  deleteSessionDocument,
   downloadSessionExport,
   exportSession,
   fetchSessionMessages,
+  fetchSessionDocuments,
   fetchSessions,
   getRun,
   hasStudentAccess,
@@ -18,6 +20,7 @@ import {
   subscribeRunEvents,
   uploadSessionDocument,
   type HistoryMessage,
+  type SessionDocument,
   type RunEventSubscription
 } from "../api";
 import { AgentProgress } from "../components/AgentProgress";
@@ -40,6 +43,7 @@ type Message = {
   id: string;
   role: "user" | "assistant";
   content: string;
+  metadata_json?: Record<string, unknown>;
 };
 
 const studentProfileStorageKey = "writingCoach.studentProfile";
@@ -80,6 +84,7 @@ export function StudentChat() {
   const [documentBusy, setDocumentBusy] = useState(false);
   const [documentMessage, setDocumentMessage] = useState("");
   const [documentError, setDocumentError] = useState("");
+  const [documents, setDocuments] = useState<SessionDocument[]>([]);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const settingsButtonRef = useRef<HTMLButtonElement | null>(null);
   const importRef = useRef<HTMLInputElement | null>(null);
@@ -147,6 +152,7 @@ export function StudentChat() {
         if (savedSessionId && restoration.messages) {
           setSessionId(savedSessionId);
           setMessages(historyMessages(restoration.messages));
+          void loadDocumentsForSession(savedSessionId);
         } else if (savedSessionId && restoration.rememberedFailed) {
           window.localStorage.removeItem(activeSessionStorageKey(initialStudentId));
         }
@@ -177,6 +183,17 @@ export function StudentChat() {
       setHistoryError("无法加载历史会话。");
     } finally {
       setLoadingHistory(false);
+    }
+  }
+
+  async function loadDocumentsForSession(nextSessionId: string) {
+    try {
+      const response = await fetchSessionDocuments(nextSessionId);
+      setDocuments(response.documents);
+      setDocumentError("");
+    } catch (error) {
+      setDocuments([]);
+      setDocumentError(error instanceof Error ? error.message : "无法读取会话资料。");
     }
   }
 
@@ -400,6 +417,7 @@ export function StudentChat() {
     setSessionId(null);
     if (profile) window.localStorage.removeItem(activeSessionStorageKey(profile.studentId));
     setMessages([]);
+    setDocuments([]);
     setInput("");
     setWebSearchEnabled(false);
     setTransferMessage("");
@@ -412,10 +430,14 @@ export function StudentChat() {
     setLoadingSession(true);
     setTransferError("");
     try {
-      const response = await fetchSessionMessages(nextSessionId);
+      const [response, documentResponse] = await Promise.all([
+        fetchSessionMessages(nextSessionId),
+        fetchSessionDocuments(nextSessionId)
+      ]);
       resetRunUi();
       setSessionId(nextSessionId);
       setMessages(historyMessages(response.messages));
+      setDocuments(documentResponse.documents);
       const profile = currentProfile(false);
       if (profile) window.localStorage.setItem(activeSessionStorageKey(profile.studentId), nextSessionId);
       setInput("");
@@ -460,14 +482,17 @@ export function StudentChat() {
     try {
       const exportValue = await readSessionImportFile(files[0]);
       const imported = await importSession(exportValue);
-      const [messageResponse, sessionsResponse] = await Promise.all([
+      const [messageResponse, sessionsResponse, documentResponse] = await Promise.all([
         fetchSessionMessages(imported.session_id),
-        fetchSessions(profile.studentId)
+        fetchSessions(profile.studentId),
+        fetchSessionDocuments(imported.session_id)
       ]);
       resetRunUi();
       setImportedRunIds(imported.run_ids);
       setSessionId(imported.session_id);
       setMessages(historyMessages(messageResponse.messages));
+      setDocuments(documentResponse.documents);
+      setDocumentError("");
       setHistory(sessionsResponse.sessions);
       window.localStorage.setItem(activeSessionStorageKey(profile.studentId), imported.session_id);
       setTransferMessage("会话已导入并打开。");
@@ -496,12 +521,28 @@ export function StudentChat() {
     setDocumentMessage("");
     try {
       const uploaded = await uploadSessionDocument(sessionId, files[0]);
-      setDocumentMessage(`${uploaded.filename} 已加入当前会话资料。`);
+      await loadDocumentsForSession(sessionId);
+      setDocumentMessage(`${uploaded.filename} 已上传并完成索引，共 ${uploaded.chunk_count} 个可检索片段。`);
     } catch (error) {
       setDocumentError(error instanceof Error ? error.message : "资料上传失败。");
     } finally {
       setDocumentBusy(false);
       if (documentRef.current) documentRef.current.value = "";
+    }
+  }
+
+  async function removeDocument(documentId: string) {
+    if (!sessionId || documentBusy) return;
+    setDocumentBusy(true);
+    setDocumentError("");
+    try {
+      await deleteSessionDocument(sessionId, documentId);
+      await loadDocumentsForSession(sessionId);
+      setDocumentMessage("会话资料已删除。");
+    } catch (error) {
+      setDocumentError(error instanceof Error ? error.message : "资料删除失败。");
+    } finally {
+      setDocumentBusy(false);
     }
   }
 
@@ -540,6 +581,9 @@ export function StudentChat() {
     setHistory([]);
     setHistoryError("");
     setMessages([]);
+    setDocuments([]);
+    setDocumentMessage("");
+    setDocumentError("");
     setInput("");
   }
 
@@ -624,6 +668,18 @@ export function StudentChat() {
         {transferError ? <p className="transfer-message error" role="alert">{transferError}</p> : null}
         {documentMessage ? <p className="transfer-message" role="status">{documentMessage}</p> : null}
         {documentError ? <p className="transfer-message error" role="alert">{documentError}</p> : null}
+        {sessionId ? (
+          <details className="session-documents">
+            <summary>会话资料{documents.length ? `（${documents.length}）` : ""}</summary>
+            <p>当前支持 TXT、Markdown，单个文件不超过 256 KiB。上传后会按标题和段落建立本地索引。</p>
+            {documents.length ? <ul>{documents.map((document) => (
+              <li key={document.document_id}>
+                <span><strong>{document.filename}</strong><small>{document.index_status === "ready" ? `已索引 · ${document.chunk_count} 个片段` : "等待重新索引"}</small></span>
+                <button type="button" disabled={documentBusy} onClick={() => void removeDocument(document.document_id)}>删除</button>
+              </li>
+            ))}</ul> : <p>当前会话还没有资料。</p>}
+          </details>
+        ) : null}
 
         {importedRunIds.length ? (
           <label className="imported-run-selector" aria-label="导入运行轨迹">
@@ -658,7 +714,7 @@ export function StudentChat() {
                 <div className="avatar" aria-hidden="true">{message.role === "assistant" ? "教" : "我"}</div>
                 <div className="message-stack"><div className="bubble">
                   {message.role === "assistant" ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown> : message.content}
-                </div></div>
+                </div>{message.role === "assistant" ? <MessageSources metadata={message.metadata_json} /> : null}</div>
               </article>
             ))}
             {runActive ? (
@@ -727,7 +783,24 @@ function historyMessages(messages: HistoryMessage[]): Message[] {
       (message.role === "user" || message.role === "assistant")
       && !(message.role === "user" && message.metadata_json.action === "synthesize")
     )
-    .map((message) => ({ id: message.id, role: message.role, content: message.content }));
+    .map((message) => ({ id: message.id, role: message.role, content: message.content, metadata_json: message.metadata_json }));
+}
+
+function MessageSources({ metadata }: { metadata?: Record<string, unknown> }) {
+  const sources = Array.isArray(metadata?.grounding_sources)
+    ? metadata.grounding_sources.filter((source): source is Record<string, unknown> => (
+      Boolean(source) && typeof source === "object" && (source as Record<string, unknown>).provider === "session_document"
+    ))
+    : [];
+  if (!sources.length) return null;
+  return (
+    <details className="message-sources">
+      <summary>本轮参考了 {sources.length} 个会话资料片段</summary>
+      <ul>{sources.map((source, index) => (
+        <li key={`${String(source.source)}-${index}`}><strong>{String(source.source || "会话资料")}</strong>{source.heading ? ` · ${String(source.heading)}` : ""}</li>
+      ))}</ul>
+    </details>
+  );
 }
 
 function freshRunState(): RunClientState {

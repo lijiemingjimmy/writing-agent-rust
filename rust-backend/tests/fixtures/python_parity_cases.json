@@ -1,0 +1,46 @@
+[
+  {
+    "name": "open topic exploration",
+    "message": "我想写小组合作，但还不知道从哪里切入",
+    "expected_skill": "socratic_review",
+    "expected_intent": "clarify",
+    "expected_stage": "topic",
+    "expected_risk": "needs_socratic"
+  },
+  {
+    "name": "numbered candidate choice",
+    "message": "2",
+    "current_skill": "socratic_review",
+    "collected_slots": true,
+    "writing_context": {"candidate_paths": [{"index": "2", "title": "机制解释"}]},
+    "expected_skill": "socratic_review",
+    "expected_intent": "select",
+    "expected_stage": "topic",
+    "expected_risk": "needs_socratic"
+  },
+  {
+    "name": "explicit branch change",
+    "message": "切换分支：/ppt",
+    "current_skill": "socratic_review",
+    "expected_skill": "ppt_qa",
+    "expected_intent": "continue",
+    "expected_stage": "unknown",
+    "expected_risk": "direct_ok"
+  },
+  {
+    "name": "material search",
+    "message": "帮我搜索小组合作中的责任分工文献",
+    "expected_skill": "material_search",
+    "expected_intent": "material_search",
+    "expected_stage": "literature",
+    "expected_risk": "direct_ok"
+  },
+  {
+    "name": "draft diagnosis",
+    "message": "这段初稿的论证逻辑哪里有问题，怎么改？",
+    "expected_skill": "draft_diagnosis",
+    "expected_intent": "diagnose",
+    "expected_stage": "draft_argument",
+    "expected_risk": "direct_ok"
+  }
+]

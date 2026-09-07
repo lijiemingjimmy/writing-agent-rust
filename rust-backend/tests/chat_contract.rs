@@ -747,6 +747,14 @@ async fn direct_ghostwriting_request_is_transformed_into_guidance() {
 }
 
 #[tokio::test]
+async fn ordinary_help_me_write_assignment_wording_never_returns_a_submit_ready_draft() {
+    let app = Harness::new([Ok("这是可以直接提交的论文正文。")], false).await;
+    let result = app.run("帮我写一篇课程论文").await;
+
+    assert!(!result.answer.unwrap().contains("直接提交的论文正文"));
+}
+
+#[tokio::test]
 async fn missing_required_slots_asks_one_question_without_calling_model() {
     // Break caught: incomplete writing feedback consumes model budget or asks every slot at once.
     let app = Harness::new([], false).await;
@@ -1518,7 +1526,112 @@ async fn socratic_model_humanizes_a_deterministic_strategy_scaffold() {
     assert!(prompt.contains("像真实助教"));
     assert!(prompt.contains("stage=candidate_paths"));
     assert!(prompt.contains("required_action=offer_candidate_paths"));
+    assert!(prompt.contains("可以组合几个方向"));
+    assert!(!prompt.contains("只选一个最贴近"));
     assert!(prompt.contains("1. 动机解释方向"));
+}
+
+#[tokio::test]
+async fn socratic_prompt_receives_relevant_uploaded_session_evidence() {
+    // Regression: uploads were only searched for draft feedback, and the Socratic prompt had no
+    // KnowledgeBundle at all. A successful upload therefore looked usable while the model could
+    // not see it during topic exploration.
+    let app = Harness::new(
+        [Ok("先结合访谈记录，说说责任边界为什么会变得模糊？")],
+        false,
+    )
+    .await;
+    DocumentRepository::new(app.pool.clone())
+        .add(
+            app.session_id,
+            "访谈记录.md",
+            "text/markdown",
+            None,
+            Some("青铜雨伞假说认为，分工不均来自责任边界模糊。"),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let result = app.run("我想研究小组合作中的分工不均和责任边界").await;
+
+    assert_eq!(result.metadata["selected_skill"], "socratic_review");
+    let requests = app.gateway.requests();
+    assert_eq!(requests.len(), 1);
+    let prompt = requests[0]
+        .messages
+        .iter()
+        .map(|message| message.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(prompt.contains("[Course and Session Evidence]"));
+    assert!(prompt.contains("访谈记录.md"));
+    assert!(prompt.contains("青铜雨伞假说"));
+    assert!(
+        result.metadata["grounding_sources"]
+            .as_array()
+            .is_some_and(|sources| sources.iter().any(|source| {
+                source["provider"] == "session_document" && source["source"] == "访谈记录.md"
+            }))
+    );
+}
+
+#[tokio::test]
+async fn ambiguous_follow_up_retrieves_session_evidence_with_writing_context() {
+    let app = Harness::new(
+        [
+            Ok("你观察到责任边界模糊发生在哪一次合作里？"),
+            Ok("资料把原因指向了任务责任没有被明确划分。"),
+        ],
+        false,
+    )
+    .await;
+    let text = "# 机制记录\n青铜雨伞假说认为，责任边界模糊会让成员等待别人补位。";
+    let chunks = writing_coach_server::corpus::chunking::chunk_document("访谈记录.md", text);
+    DocumentRepository::new(app.pool.clone())
+        .add_with_chunks(
+            app.session_id,
+            "访谈记录.md",
+            "text/markdown",
+            text,
+            None,
+            &chunks,
+        )
+        .await
+        .unwrap();
+
+    app.run("我想研究小组合作中的责任边界模糊").await;
+    let result = app.run("根据我上传的资料，这是什么原因？").await;
+
+    assert_eq!(result.metadata["selected_skill"], "socratic_review");
+    let requests = app.gateway.requests();
+    let prompt = requests
+        .last()
+        .unwrap()
+        .messages
+        .iter()
+        .map(|message| message.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(prompt.contains("青铜雨伞假说"));
+    assert!(
+        result.metadata["grounding_sources"]
+            .as_array()
+            .is_some_and(|sources| sources
+                .iter()
+                .any(|source| source["source"] == "访谈记录.md"))
+    );
+    assert_eq!(result.metadata["session_document_status"], "used");
+    assert!(
+        result.metadata["session_document_sources"]
+            .as_array()
+            .is_some_and(|sources| sources.iter().any(|source| {
+                source["source"] == "访谈记录.md"
+                    && source["heading"] == "机制记录"
+                    && source["chunk_id"].as_str().is_some()
+                    && source["chunk_index"] == 0
+            }))
+    );
 }
 
 #[tokio::test]

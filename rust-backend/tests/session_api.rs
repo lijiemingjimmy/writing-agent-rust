@@ -140,6 +140,13 @@ async fn repositories_preserve_legacy_json_and_import_under_new_ids(pool: Sqlite
         documents.list_by_session(imported.id).await.unwrap()[0].metadata_json,
         json!({"tag": "evidence"})
     );
+    assert!(
+        !documents
+            .list_chunks_by_session(imported.id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
         events.list_by_session(imported.id).await.unwrap()[0].metadata_json,
         json!({"reason": "student choice"})
@@ -241,6 +248,8 @@ async fn upload_text_document_stores_bounded_utf8_without_a_server_path() {
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let uploaded: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(uploaded["document_id"].as_str().unwrap().len(), 32);
+    assert_eq!(uploaded["index_status"], "ready");
+    assert!(uploaded["chunk_count"].as_u64().unwrap() >= 1);
     assert!(
         uploaded["document_id"]
             .as_str()
@@ -253,17 +262,125 @@ async fn upload_text_document_stores_bounded_utf8_without_a_server_path() {
     assert_eq!(uploaded["content_type"], "text/markdown");
     assert_eq!(uploaded["size_bytes"], 30);
 
+    let listed = get_json(
+        app.clone(),
+        &format!("/api/sessions/{session_id}/documents"),
+        &token,
+    )
+    .await;
+    assert_eq!(listed["documents"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["documents"][0]["filename"], "field-notes.md");
+    assert_eq!(listed["documents"][0]["index_status"], "ready");
+    assert!(listed["documents"][0]["chunk_count"].as_u64().unwrap() >= 1);
+
+    let delete_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!(
+                    "/api/sessions/{session_id}/documents/{}",
+                    uploaded["document_id"].as_str().unwrap()
+                ))
+                .header(AUTHORIZATION, bearer(&token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(delete_response.status(), StatusCode::NO_CONTENT);
+
+    let listed_after_delete = get_json(
+        app.clone(),
+        &format!("/api/sessions/{session_id}/documents"),
+        &token,
+    )
+    .await;
+    assert!(
+        listed_after_delete["documents"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
     let export = get_json(
         app.clone(),
         &format!("/api/sessions/{session_id}/export"),
         &token,
     )
     .await;
-    let document = &export["documents"][0];
-    assert_eq!(document["raw_path"], Value::Null);
-    assert_eq!(document["parsed_text"], "# 访谈\n\n学生观察记录");
-    assert_eq!(document["metadata_json"]["source"], "student_upload");
-    assert_eq!(document["metadata_json"]["size_bytes"], 30);
+    assert!(export["documents"].as_array().unwrap().is_empty());
+
+    drop(app);
+    remove_database(&database_path);
+}
+
+#[tokio::test]
+async fn a_new_login_cannot_read_or_delete_another_principals_session_documents() {
+    let (app, database_path, owner_token) = app_with_session("2025010468", "我的选题").await;
+    let sessions = get_json(
+        app.clone(),
+        "/api/sessions?user_id=2025010468",
+        &owner_token,
+    )
+    .await;
+    let session_id = sessions["sessions"][0]["session_id"].as_str().unwrap();
+    let upload = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/sessions/{session_id}/documents?filename=private.md"
+                ))
+                .header(AUTHORIZATION, bearer(&owner_token))
+                .header(CONTENT_TYPE, "text/markdown")
+                .body(Body::from("# 私有资料\n不能被同名登录继承"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let uploaded: Value =
+        serde_json::from_slice(&upload.into_body().collect().await.unwrap().to_bytes()).unwrap();
+
+    let bootstrap = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/student/access/bootstrap")
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"student_name":"2025010468","student_id":"2025010468"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bootstrap.status(), StatusCode::CREATED);
+    let bootstrap_body = bootstrap.into_body().collect().await.unwrap().to_bytes();
+    let other_access: Value = serde_json::from_slice(&bootstrap_body).unwrap();
+    let other_token = other_access["access_token"].as_str().unwrap();
+
+    for request in [
+        Request::builder()
+            .uri(format!("/api/sessions/{session_id}/documents"))
+            .header(AUTHORIZATION, bearer(other_token))
+            .body(Body::empty())
+            .unwrap(),
+        Request::builder()
+            .method("DELETE")
+            .uri(format!(
+                "/api/sessions/{session_id}/documents/{}",
+                uploaded["document_id"].as_str().unwrap()
+            ))
+            .header(AUTHORIZATION, bearer(other_token))
+            .body(Body::empty())
+            .unwrap(),
+    ] {
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
 
     drop(app);
     remove_database(&database_path);

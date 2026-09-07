@@ -192,6 +192,14 @@ export type DocumentUploadResponse = {
   filename: string;
   content_type: "text/plain" | "text/markdown";
   size_bytes: number;
+  chunk_count: number;
+  index_status: "ready";
+};
+
+export type SessionDocument = Omit<DocumentUploadResponse, "size_bytes" | "index_status"> & {
+  size_bytes: number | null;
+  index_status: "ready" | "legacy";
+  created_at: string | null;
 };
 
 export async function createRun(payload: CreateRunRequest): Promise<CreateRunResponse> {
@@ -440,6 +448,31 @@ export async function uploadSessionDocument(
     "资料上传失败",
     fetcher
   );
+}
+
+export async function fetchSessionDocuments(
+  sessionId: string,
+  fetcher: Fetcher = fetch
+): Promise<{ documents: SessionDocument[] }> {
+  return requestJson<{ documents: SessionDocument[] }>(
+    studentApiUrl(`/api/sessions/${encodeURIComponent(sessionId)}/documents`),
+    {},
+    "无法读取会话资料",
+    fetcher
+  );
+}
+
+export async function deleteSessionDocument(
+  sessionId: string,
+  documentId: string,
+  fetcher: Fetcher = fetch
+): Promise<void> {
+  const response = await studentFetch(
+    studentApiUrl(`/api/sessions/${encodeURIComponent(sessionId)}/documents/${encodeURIComponent(documentId)}`),
+    { method: "DELETE" },
+    fetcher
+  );
+  if (!response.ok) throw new Error("无法删除会话资料");
 }
 
 export async function readSessionImportFile(

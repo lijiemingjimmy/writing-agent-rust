@@ -36,6 +36,8 @@ Skill 和检索模块在缺少私有 `语料/` 时仍可加载；放回本地目
 | `GET /api/sessions/:id/messages` | 会话消息 |
 | `POST /api/sessions/:id/messages` | 兼容旧前端的同步消息入口 |
 | `POST /api/sessions/:id/documents` | 上传受限 TXT/Markdown 资料 |
+| `GET /api/sessions/:id/documents` | 列出文件、索引状态与片段数 |
+| `DELETE /api/sessions/:id/documents/:document_id` | 删除文件及其索引片段 |
 | `GET /api/sessions/:id/report` | 生成写作过程报告 |
 | `GET /api/sessions/:id/export` | 导出完整会话轨迹 |
 | `POST /api/sessions/import` | 用新 ID 导入轨迹 |
@@ -59,6 +61,12 @@ principal 校验会话归属。教师端在私有运行配置中设置 `security
 `conversation_context_max_chars` 默认为 24,000，未超过时保留同一会话全部消息；
 超过后保留首条用户消息、`conversation_context_recent_chars` 指定的最近窗口、已确认事实
 和持久摘要。“形成思路”使用同一上下文调用模型收束；模型供应商错误时才使用确定性降级。
+
+会话资料上传后按标题和长度确定性分块，与文档记录事务化写入。检索查询会组合本轮消息、
+写作上下文和最近用户消息，命中片段以 untrusted evidence 进入普通与 Socratic Prompt；响应
+元数据包含文件、标题和 chunk 标识，便于前端解释“本轮具体看到了什么”。历史导入会从
+正文重建索引。上下文预检失败时，终态错误会给出预计 token、配置上限和缩短输入/删除资料
+的恢复提示。
 
 ## macOS 常驻运行
 

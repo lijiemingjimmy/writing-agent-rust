@@ -745,9 +745,12 @@ impl AgentProgram for WritingCoachProgram {
             self.material_search
                 .build_plan(routing_message, &state.writing_context)
         });
+        let session_document_query =
+            build_session_document_query(routing_message, &state, &memory.recent_messages);
         let plan = knowledge_plan(
             skill,
             routing_message,
+            &session_document_query,
             web_enabled,
             turn.session_id,
             material_plan.as_ref(),
@@ -846,6 +849,7 @@ impl AgentProgram for WritingCoachProgram {
                     state: &state,
                     flow,
                     recent_messages: &memory.recent_messages,
+                    knowledge: &knowledge,
                     user_message: routing_message,
                 })
         } else {
@@ -1148,6 +1152,7 @@ fn record_route(state: &mut SessionStateData, route: &RouteDecision) {
 fn knowledge_plan(
     skill: &SkillDefinition,
     message: &str,
+    session_document_query: &str,
     web_enabled: bool,
     session_id: crate::domain::SessionId,
     material: Option<&crate::skills::MaterialSearchPlan>,
@@ -1157,9 +1162,9 @@ fn knowledge_plan(
     if decision.use_course_corpus {
         tools.push("course_corpus");
     }
-    if matches!(skill.id.as_str(), "draft_diagnosis" | "writing_feedback") {
-        tools.push("session_documents");
-    }
+    // Uploaded session evidence can inform every writing task, including Socratic topic
+    // exploration. The tool remains session-scoped and returns no hits when no document matches.
+    tools.push("session_documents");
     if decision.use_external_search && web_enabled {
         tools.extend(["scholarly", "web"]);
     }
@@ -1172,6 +1177,7 @@ fn knowledge_plan(
             ("scholarly", Some(plan)) => SearchRequest::from_terms(plan.query_terms.clone())
                 .with_max_results(plan.max_results),
             ("web", Some(plan)) => SearchRequest::new(&plan.web_query),
+            ("session_documents", _) => SearchRequest::new(session_document_query),
             _ => SearchRequest::new(message),
         };
         PlannedSearch::new(
@@ -1182,6 +1188,45 @@ fn knowledge_plan(
                 .with_target_skill_id(&skill.id),
         )
     }))
+}
+
+fn build_session_document_query(
+    message: &str,
+    state: &SessionStateData,
+    recent_messages: &[crate::domain::Message],
+) -> String {
+    let writing = &state.writing_context;
+    let mut parts = vec![message.trim().to_owned()];
+    for value in [
+        writing.topic.as_deref(),
+        writing.research_question.as_deref(),
+        writing.selected_direction.as_deref(),
+        writing.suspected_mechanism.as_deref(),
+        writing.selected_mechanism.as_deref(),
+        writing.core_claim.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let value = value.trim();
+        if !value.is_empty() && !parts.iter().any(|part| part == value) {
+            parts.push(value.to_owned());
+        }
+    }
+    let mut recent_user_messages = recent_messages
+        .iter()
+        .rev()
+        .filter(|item| item.role == "user")
+        .take(2)
+        .collect::<Vec<_>>();
+    recent_user_messages.reverse();
+    for recent in recent_user_messages {
+        let value = recent.content.trim();
+        if !value.is_empty() && !parts.iter().any(|part| part == value) {
+            parts.push(value.to_owned());
+        }
+    }
+    parts.join("\n")
 }
 
 fn extract_year_range(message: &str) -> (Option<i32>, Option<i32>) {
@@ -1282,6 +1327,13 @@ fn answer_metadata(
     let web = filtered_sources(&knowledge.hits, |provider| {
         matches!(provider, "web" | "searxng" | "bing" | "brave")
     });
+    let session_documents =
+        filtered_sources(&knowledge.hits, |provider| provider == "session_document");
+    let session_document_failed = knowledge
+        .metadata
+        .provider_failures
+        .iter()
+        .any(|failure| failure.provider == "session_documents");
     let course_requested = knowledge_decision.is_some_and(|decision| decision.use_course_corpus);
     let external_requested =
         knowledge_decision.is_some_and(|decision| decision.use_external_search);
@@ -1343,6 +1395,14 @@ fn answer_metadata(
             "results": web,
         },
         "grounding_sources": knowledge.hits.iter().map(source_value).collect::<Vec<_>>(),
+        "session_document_status": if session_document_failed {
+            "failed"
+        } else if session_documents.is_empty() {
+            "no_hits"
+        } else {
+            "used"
+        },
+        "session_document_sources": session_documents,
         "provider_failures": knowledge.metadata.provider_failures,
         "guardrail_triggered": guardrail_triggered,
         "branch": branch.metadata(),
@@ -1420,9 +1480,13 @@ fn source_value(hit: &SearchHit) -> Value {
     json!({
         "source": hit.source,
         "title": hit.title,
+        "heading": hit.heading,
         "provider": hit.provider,
         "url": hit.url,
         "doi": hit.doi,
+        "document_id": hit.metadata.get("document_id").cloned().unwrap_or(Value::Null),
+        "chunk_id": hit.metadata.get("chunk_id").cloned().unwrap_or(Value::Null),
+        "chunk_index": hit.metadata.get("chunk_index").cloned().unwrap_or(Value::Null),
     })
 }
 
@@ -1434,10 +1498,10 @@ fn contains_any(text: &str, patterns: &[&str]) -> bool {
 }
 
 fn is_direct_delivery_request(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
     contains_any(
-        &message.to_ascii_lowercase(),
+        &message,
         &[
-            "帮我写",
             "直接写",
             "替我写",
             "完整范文",
@@ -1446,7 +1510,8 @@ fn is_direct_delivery_request(message: &str) -> bool {
             "直接提交",
             "交作业",
         ],
-    )
+    ) || (message.contains("帮我写")
+        && contains_any(&message, &["作文", "论文", "报告", "作业", "正文", "段落"]))
 }
 
 fn routing_message(message: &str) -> (&str, bool) {

@@ -709,6 +709,37 @@ test("student document upload rejects unsafe paths, types, invalid UTF-8, and ov
   assert.equal(requests, 0);
 });
 
+test("student can list and delete only the active session documents", async () => {
+  const api = await loadApi();
+  const requests = [];
+  const fetcher = async (url, init = {}) => {
+    requests.push([url, init.method || "GET"]);
+    if ((init.method || "GET") === "DELETE") {
+      return { ok: true, status: 204, json: async () => ({}) };
+    }
+    return jsonResponse({
+      documents: [{
+        document_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        filename: "notes.md",
+        content_type: "text/markdown",
+        size_bytes: 128,
+        chunk_count: 2,
+        index_status: "ready",
+        created_at: "2026-09-07T00:00:00Z"
+      }]
+    });
+  };
+
+  const listed = await api.fetchSessionDocuments("session", fetcher);
+  await api.deleteSessionDocument("session", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", fetcher);
+
+  assert.equal(listed.documents[0].chunk_count, 2);
+  assert.deepEqual(requests, [
+    ["/api/sessions/session/documents", "GET"],
+    ["/api/sessions/session/documents/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "DELETE"]
+  ]);
+});
+
 class FakeEventSource {
   constructor(url) {
     this.url = url;

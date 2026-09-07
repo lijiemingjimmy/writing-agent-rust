@@ -3,7 +3,7 @@ use axum::{
     body::Bytes,
     extract::{DefaultBodyLimit, Path, Query, State, rejection::JsonRejection},
     http::{HeaderMap, StatusCode, header::CONTENT_TYPE},
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use futures_util::stream;
 use serde::Deserialize;
@@ -20,7 +20,8 @@ use crate::{
         },
         parse_json,
     },
-    domain::SessionId,
+    corpus::chunking::chunk_document,
+    domain::{DocumentId, SessionId},
     store::access::StudentAccessRepository,
     store::sessions::{
         DocumentRepository, MAX_SESSION_EXPORT_BYTES, MessageRepository, SessionExportV1,
@@ -57,9 +58,54 @@ pub fn router() -> Router<AppState> {
         .route("/{id}/report", get(get_report))
         .route(
             "/{id}/documents",
-            post(upload_document).layer(DefaultBodyLimit::max(MAX_DOCUMENT_UPLOAD_BYTES)),
+            get(list_documents)
+                .post(upload_document)
+                .layer(DefaultBodyLimit::max(MAX_DOCUMENT_UPLOAD_BYTES)),
         )
+        .route("/{id}/documents/{document_id}", delete(delete_document))
         .route("/{id}/export", get(export_session))
+}
+
+async fn list_documents(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let session_id = parse_session_id(&id)?;
+    ensure_owner(&state, &headers, session_id).await?;
+    let repository = DocumentRepository::new(state.pool);
+    let mut summaries = Vec::new();
+    for document in repository.list_by_session(session_id).await? {
+        let chunk_count = repository.count_chunks(document.id).await?;
+        summaries.push(json!({
+            "document_id": document.id.to_legacy_hex(),
+            "filename": document.filename,
+            "content_type": document.content_type,
+            "size_bytes": document.metadata_json.get("size_bytes").and_then(Value::as_u64),
+            "chunk_count": chunk_count,
+            "index_status": if chunk_count > 0 { "ready" } else { "legacy" },
+            "created_at": document.created_at,
+        }));
+    }
+    Ok(Json(json!({"documents": summaries})))
+}
+
+async fn delete_document(
+    State(state): State<AppState>,
+    Path((id, document_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    let session_id = parse_session_id(&id)?;
+    ensure_owner(&state, &headers, session_id).await?;
+    let document_id =
+        DocumentId::parse_legacy(&document_id).map_err(|_| ApiError::invalid_identifier())?;
+    if !DocumentRepository::new(state.pool)
+        .delete_for_session(session_id, document_id)
+        .await?
+    {
+        return Err(ApiError::not_found("document"));
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn list_sessions(
@@ -295,17 +341,19 @@ async fn upload_document(
     SessionRepository::new(state.pool.clone())
         .get(session_id)
         .await?;
+    let chunks = chunk_document(&filename, &parsed_text);
+    let chunk_count = chunks.len();
     let document = DocumentRepository::new(state.pool)
-        .add(
+        .add_with_chunks(
             session_id,
             &filename,
             &content_type,
-            None,
-            Some(&parsed_text),
+            &parsed_text,
             Some(serde_json::json!({
                 "source": "student_upload",
                 "size_bytes": bytes.len(),
             })),
+            &chunks,
         )
         .await?;
     Ok((
@@ -318,6 +366,8 @@ async fn upload_document(
             "content_type": document.content_type,
             "parsed_text": document.parsed_text,
             "size_bytes": bytes.len(),
+            "chunk_count": chunk_count,
+            "index_status": "ready",
         })),
     ))
 }

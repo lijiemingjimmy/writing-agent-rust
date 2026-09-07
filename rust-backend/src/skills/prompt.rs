@@ -46,6 +46,7 @@ pub struct SocraticPromptContext<'a> {
     pub state: &'a SessionStateData,
     pub flow: &'a FlowDecision,
     pub recent_messages: &'a [Message],
+    pub knowledge: &'a KnowledgeBundle,
     pub user_message: &'a str,
 }
 
@@ -186,6 +187,7 @@ impl PromptBuilder {
 - 不要机械三段式，不要每轮都列 1/2/3，除非策略草案本轮明确要求给候选项。\n\
 - 可以自然承认误解或换题，但不能道歉堆叠。\n\
 - 追问要少，一轮最多问一个核心缺口；如果策略草案要求候选项，可以列候选项，但结尾只给一个下一步动作。\n\n\
+- 候选项不是考试选择题；除非它们在事实或方法上互斥，否则允许学生组合几个方向或直接开放描述。\n\n\
 [Hard Constraints]\n\
 - 最新用户消息优先级最高。必须从最新一句出发，上下文只能辅助理解，不能覆盖最新一句。\n\
 - 必须保留策略草案里的核心推进意图、候选编号、已选方向、下一步任务。\n\
@@ -200,6 +202,20 @@ impl PromptBuilder {
             allowlisted_user_state(context.state, context.skill),
         ));
         push_recent_messages(&mut messages, context.recent_messages);
+        messages.push(untrusted_data_message(
+            "Course and Session Evidence",
+            &format_hits(
+                "Course and Session Evidence",
+                &context.knowledge.hits,
+                |hit| {
+                    matches!(
+                        hit.provider.as_str(),
+                        "corpus" | "course_corpus" | "session_document"
+                    )
+                },
+                "No relevant course or session evidence was found. Do not attribute claims to course materials or uploaded documents.",
+            ),
+        ));
         messages.push(untrusted_data_message(
             "Latest User Message",
             context.user_message.trim(),
@@ -307,7 +323,7 @@ fn socratic_strategy_scaffold(
         FlowStage::CandidatePaths => {
             let paths = format_candidate_paths(&writing.candidate_paths);
             format!(
-                "现在信息足够给候选切口，但它们不是最终答案。保留以下稳定编号和内容：\n\n{paths}\n\n请学生只选一个最贴近真实观察的方向；下一轮再追问选择理由。"
+                "现在信息足够给候选切口，但它们不是最终答案。保留以下稳定编号和内容：\n\n{paths}\n\n请学生指出最贴近真实观察的方向；这些方向如果有重叠，可以组合几个方向，也可以不用编号直接说自己的理解。下一轮只追问一个选择理由。"
             )
         }
         FlowStage::ChoiceReflection => {
@@ -319,7 +335,7 @@ fn socratic_strategy_scaffold(
                 )
             } else {
                 format!(
-                    "确认学生选择了“{selected}”。先不要直接给最终研究问题；追问为什么选它，以及未选方向为什么暂时不合适。"
+                    "确认学生选择了“{selected}”。先不要直接给最终研究问题；本轮只追问为什么这样选择。如果几个方向存在重叠，允许学生说明如何组合，不强迫解释每个未选项。"
                 )
             }
         }
@@ -837,7 +853,11 @@ fn is_direct_delivery(text: &str, inferred_risk: bool) -> bool {
         "已按要求写好全文",
     ]
     .iter()
-    .any(|pattern| normalized.contains(pattern));
+    .any(|pattern| normalized.contains(pattern))
+        || (normalized.contains("可以直接提交")
+            && !["不可以直接提交", "不能直接提交", "不应直接提交"]
+                .iter()
+                .any(|warning| normalized.contains(warning)));
     if explicit {
         return true;
     }

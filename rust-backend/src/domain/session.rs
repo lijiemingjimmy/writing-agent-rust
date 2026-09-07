@@ -1,4 +1,4 @@
-use super::{DocumentId, MessageId, SessionId, SkillEventId};
+use super::{DocumentChunkId, DocumentId, MessageId, SessionId, SkillEventId};
 
 #[derive(Clone, Debug)]
 pub struct Session {
@@ -36,6 +36,20 @@ pub struct Document {
     pub raw_path: Option<String>,
     pub parsed_text: Option<String>,
     pub metadata_json: serde_json::Value,
+    pub created_at: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct DocumentChunk {
+    pub id: DocumentChunkId,
+    pub document_id: DocumentId,
+    pub session_id: SessionId,
+    pub chunk_index: usize,
+    pub heading: String,
+    pub start_char: usize,
+    pub end_char: usize,
+    pub text: String,
+    pub search_text: String,
     pub created_at: Option<String>,
 }
 

@@ -20,6 +20,13 @@ pub enum AppError {
     InvalidExport(String),
     #[error("invalid run request: {0}")]
     InvalidRun(String),
+    #[error(
+        "model request requires about {estimated_tokens} tokens but the context limit is {context_limit}"
+    )]
+    ContextCapacityExceeded {
+        estimated_tokens: u64,
+        context_limit: u64,
+    },
     #[error("session already has an active run")]
     ActiveRunConflict,
     #[error("run was cancelled")]

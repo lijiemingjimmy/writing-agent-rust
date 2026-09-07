@@ -223,9 +223,10 @@ impl RunContext {
                 AppError::InvalidRun("model request token estimate overflowed".to_owned())
             })?;
         if estimated_tokens > u64::from(self.settings.context_length) {
-            return Err(AppError::InvalidRun(
-                "model request exceeds configured context capacity".to_owned(),
-            ));
+            return Err(AppError::ContextCapacityExceeded {
+                estimated_tokens,
+                context_limit: u64::from(self.settings.context_length),
+            });
         }
 
         let run = self.repository.get(self.run_id).await?;

@@ -11,9 +11,10 @@ use tokio::sync::Notify;
 
 use crate::{
     AppError,
+    corpus::chunking::{NewDocumentChunk, chunk_document},
     domain::{
-        Document, DocumentId, Message, MessageId, PriceSnapshot, RunStatus, Session, SessionId,
-        SessionState, SkillEvent, SkillEventId, Usage,
+        Document, DocumentChunk, DocumentChunkId, DocumentId, Message, MessageId, PriceSnapshot,
+        RunStatus, Session, SessionId, SessionState, SkillEvent, SkillEventId, Usage,
     },
     llm::calculate_cost,
 };
@@ -483,6 +484,10 @@ impl SessionRepository {
                 created_at: document.created_at,
             };
             insert_document_with_time(&mut tx, new_session_id, &document).await?;
+            if let Some(parsed_text) = document.parsed_text.as_deref() {
+                let chunks = chunk_document(&document.filename, parsed_text);
+                insert_document_chunks(&mut tx, &document, &chunks).await?;
+            }
         }
         for mut event in export.skill_events {
             rewrite_run_references(&mut event.metadata_json, &run_ids);
@@ -670,6 +675,32 @@ impl DocumentRepository {
         self.get(document.id).await
     }
 
+    pub async fn add_with_chunks(
+        &self,
+        session_id: SessionId,
+        filename: &str,
+        content_type: &str,
+        parsed_text: &str,
+        metadata_json: Option<Value>,
+        chunks: &[NewDocumentChunk],
+    ) -> Result<Document, AppError> {
+        let document = Document {
+            id: DocumentId::new(),
+            session_id,
+            filename: filename.to_owned(),
+            content_type: content_type.to_owned(),
+            raw_path: None,
+            parsed_text: Some(parsed_text.to_owned()),
+            metadata_json: metadata_json.unwrap_or_else(|| serde_json::json!({})),
+            created_at: None,
+        };
+        let mut tx = self.pool.begin().await?;
+        insert_document(&mut tx, session_id, &document).await?;
+        insert_document_chunks(&mut tx, &document, chunks).await?;
+        tx.commit().await?;
+        self.get(document.id).await
+    }
+
     pub async fn list_by_session(&self, session_id: SessionId) -> Result<Vec<Document>, AppError> {
         let rows = sqlx::query(
             "SELECT id, session_id, filename, content_type, raw_path, parsed_text, metadata_json, created_at \
@@ -679,6 +710,49 @@ impl DocumentRepository {
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(document_from_row).collect()
+    }
+
+    pub async fn list_chunks_by_session(
+        &self,
+        session_id: SessionId,
+    ) -> Result<Vec<DocumentChunk>, AppError> {
+        let rows = sqlx::query(
+            "SELECT id, document_id, session_id, chunk_index, heading, start_char, end_char, text, search_text, created_at \
+             FROM document_chunks WHERE session_id = ? ORDER BY document_id, chunk_index",
+        )
+        .bind(session_id.to_legacy_hex())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(document_chunk_from_row).collect()
+    }
+
+    pub async fn count_chunks(&self, document_id: DocumentId) -> Result<i64, AppError> {
+        Ok(
+            sqlx::query_scalar("SELECT COUNT(*) FROM document_chunks WHERE document_id = ?")
+                .bind(document_id.to_legacy_hex())
+                .fetch_one(&self.pool)
+                .await?,
+        )
+    }
+
+    pub async fn delete_for_session(
+        &self,
+        session_id: SessionId,
+        document_id: DocumentId,
+    ) -> Result<bool, AppError> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM document_chunks WHERE document_id = ? AND session_id = ?")
+            .bind(document_id.to_legacy_hex())
+            .bind(session_id.to_legacy_hex())
+            .execute(&mut *tx)
+            .await?;
+        let result = sqlx::query("DELETE FROM documents WHERE id = ? AND session_id = ?")
+            .bind(document_id.to_legacy_hex())
+            .bind(session_id.to_legacy_hex())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(result.rows_affected() == 1)
     }
 
     async fn get(&self, id: DocumentId) -> Result<Document, AppError> {
@@ -1708,6 +1782,27 @@ fn document_from_row(row: &SqliteRow) -> Result<Document, AppError> {
     })
 }
 
+fn document_chunk_from_row(row: &SqliteRow) -> Result<DocumentChunk, AppError> {
+    let chunk_index = row.try_get::<i64, _>("chunk_index")?;
+    let start_char = row.try_get::<i64, _>("start_char")?;
+    let end_char = row.try_get::<i64, _>("end_char")?;
+    Ok(DocumentChunk {
+        id: DocumentChunkId::parse_legacy(&row.try_get::<String, _>("id")?)?,
+        document_id: DocumentId::parse_legacy(&row.try_get::<String, _>("document_id")?)?,
+        session_id: SessionId::parse_legacy(&row.try_get::<String, _>("session_id")?)?,
+        chunk_index: usize::try_from(chunk_index)
+            .map_err(|_| AppError::CorruptData("invalid document chunk index".to_owned()))?,
+        heading: row.try_get("heading")?,
+        start_char: usize::try_from(start_char)
+            .map_err(|_| AppError::CorruptData("invalid document chunk start".to_owned()))?,
+        end_char: usize::try_from(end_char)
+            .map_err(|_| AppError::CorruptData("invalid document chunk end".to_owned()))?,
+        text: row.try_get("text")?,
+        search_text: row.try_get("search_text")?,
+        created_at: row.try_get("created_at")?,
+    })
+}
+
 fn skill_event_from_row(row: &SqliteRow) -> Result<SkillEvent, AppError> {
     Ok(SkillEvent {
         id: SkillEventId::parse_legacy(&row.try_get::<String, _>("id")?)?,
@@ -1810,6 +1905,37 @@ async fn insert_document_with_time(
     .bind(&document.created_at)
     .execute(&mut **tx)
     .await?;
+    Ok(())
+}
+
+async fn insert_document_chunks(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    document: &Document,
+    chunks: &[NewDocumentChunk],
+) -> Result<(), AppError> {
+    for chunk in chunks {
+        sqlx::query(
+            "INSERT INTO document_chunks (id, document_id, session_id, chunk_index, heading, start_char, end_char, text, search_text, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+        )
+        .bind(DocumentChunkId::new().to_legacy_hex())
+        .bind(document.id.to_legacy_hex())
+        .bind(document.session_id.to_legacy_hex())
+        .bind(i64::try_from(chunk.chunk_index).map_err(|_| {
+            AppError::CorruptData("chunk index exceeds SQLite integer range".to_owned())
+        })?)
+        .bind(&chunk.heading)
+        .bind(i64::try_from(chunk.start_char).map_err(|_| {
+            AppError::CorruptData("chunk start exceeds SQLite integer range".to_owned())
+        })?)
+        .bind(i64::try_from(chunk.end_char).map_err(|_| {
+            AppError::CorruptData("chunk end exceeds SQLite integer range".to_owned())
+        })?)
+        .bind(&chunk.text)
+        .bind(&chunk.search_text)
+        .execute(&mut **tx)
+        .await?;
+    }
     Ok(())
 }
 

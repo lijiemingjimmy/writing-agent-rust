@@ -70,6 +70,12 @@ npm run dev
 - 提示词窃取、凭据盗取、暴力/武器和自伤风险在路由及模型调用前由 Rust 确定性分流。
 - Python 当前的 student access、sessions、messages、documents、reports、skills 与 teacher dashboard Router 已由 Rust 原生实现；统计只读取 Rust 新数据库。
 
+### 会话资料如何参与回答
+
+学生端支持上传 UTF-8 编码的 `.txt` 和 `.md` 文件，单个文件上限 256 KiB。Rust 后端会按 Markdown 标题和文本长度切成有序片段，并在同一次数据库事务中保存文档与索引；任何写作 Skill 都可以结合当前问题、已形成的写作上下文和最近对话检索这些片段。命中的内容会作为“不可信证据”加入模型提示词，不能改变系统规则；回答下方会显示本轮实际使用的文件名和标题，资料面板也会显示索引片段数。删除文件会同时删除其索引片段。
+
+可直接上传公开合成样例 [`corpus/examples/session-document-demo.md`](corpus/examples/session-document-demo.md)，随后提问“根据我上传的资料，分工不均可能是什么原因？”，验证回答来源中是否出现该文件。会话导出后再次导入时，Rust 会从导出的文档正文重新建立片段索引，不需要携带本机路径或数据库文件。
+
 学生端首次确认姓名与学号时会向 Rust 后端换取随机 Bearer Token。受保护的会话、消息、资料、报告和导入导出接口都按 Token principal 校验归属，不能靠请求体伪造学号访问他人数据。Token 原文只保存在浏览器；数据库保存的是带独立 pepper 的 HMAC-SHA256 摘要。
 
 ## 最短演示路径
@@ -79,6 +85,7 @@ npm run dev
 3. 点击“形成思路”，检查系统是否停止追问、输出七段结构化思路，并在轨迹中记录这次模型调用的 Token 与费用。
 4. 输入“帮我找文献”，观察当前 Skill 仍保持；再输入“切换分支：帮我找小组合作文献”，观察显式切换。
 5. 在运行轨迹中查看步骤、来源、Token、费用与终态。
+6. 上传 `corpus/examples/session-document-demo.md`，围绕“责任边界”继续追问，检查资料面板的“已索引”、回答来源与删除操作。
 
 ## 验证
 

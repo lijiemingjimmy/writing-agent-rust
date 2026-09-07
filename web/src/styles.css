@@ -1949,10 +1949,11 @@ a {
 .chat-thread {
   padding: 42px 32px 28px;
   gap: 24px;
+  overflow-x: hidden;
 }
 
 .chat-message {
-  width: min(800px, 100%);
+  width: min(1080px, 100%);
 }
 
 .composer-wrap {
@@ -1966,7 +1967,7 @@ a {
 }
 
 .chat-composer {
-  width: min(800px, 100%);
+  width: min(1080px, 100%);
   min-height: 70px;
   padding: 12px 12px 12px 20px;
   grid-template-columns: minmax(0, 1fr) 68px 44px;
@@ -2092,7 +2093,66 @@ a {
   display: flex;
   align-items: center;
   gap: 7px;
+  max-width: calc(100% - 48px);
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
+
+.session-documents {
+  width: min(1080px, calc(100% - 64px));
+  margin: 72px auto 0;
+  padding: 10px 14px;
+  border: 1px solid #e2e6ef;
+  border-radius: 12px;
+  background: #fafbfe;
+  color: #596273;
+  font-size: 12px;
+}
+
+.session-documents summary {
+  cursor: pointer;
+  color: #343b49;
+  font-weight: 700;
+}
+
+.session-documents ul,
+.message-sources ul {
+  margin: 9px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.session-documents li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 0;
+  border-top: 1px solid #eceff5;
+}
+
+.session-documents li span,
+.session-documents li small {
+  display: block;
+}
+
+.session-documents li button {
+  min-height: 28px;
+  padding: 4px 9px;
+  border: 1px solid #e2caca;
+  border-radius: 7px;
+  background: #fff;
+  color: #9a4039;
+}
+
+.message-sources {
+  margin-top: 8px;
+  color: #667085;
+  font-size: 12px;
+}
+
+.message-sources summary { cursor: pointer; }
+.message-sources li { padding: 3px 0; }
 
 .student-run-actions button,
 .student-run-actions label {
@@ -2532,6 +2592,11 @@ a {
     position: static;
     flex-wrap: wrap;
     padding: 10px 18px 0;
+  }
+
+  .session-documents {
+    width: calc(100% - 36px);
+    margin-top: 10px;
   }
 
   .transfer-message {

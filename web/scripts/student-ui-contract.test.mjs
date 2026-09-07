@@ -53,6 +53,10 @@ test("offers a bounded text or Markdown upload for the active Rust-backed sessio
   assert.match(source, /accept="\.txt,\.md,text\/plain,text\/markdown"/);
   assert.match(source, /disabled=\{!sessionId \|\| busy\}/);
   assert.match(source, /请先开始一次对话/);
+  assert.match(source, /当前支持 TXT、Markdown/);
+  assert.match(source, /会话资料/);
+  assert.match(source, /已索引/);
+  assert.match(source, /本轮参考了/);
 });
 
 test("offers an explicit synthesis action instead of pretending the button is a chat message", async () => {

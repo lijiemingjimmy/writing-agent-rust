@@ -4,7 +4,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use serde_json::json;
+use serde::Deserialize;
+use serde_json::{Value, json};
 use writing_coach_server::{
     domain::RouteInput,
     skills::{SkillRegistry, SkillRouter},
@@ -19,6 +20,55 @@ fn skills_root() -> PathBuf {
 
 fn load_router() -> SkillRouter {
     SkillRouter::new(SkillRegistry::load(&skills_root()).expect("real skills corpus loads"))
+}
+
+#[derive(Deserialize)]
+struct PythonParityCase {
+    name: String,
+    message: String,
+    #[serde(default)]
+    current_skill: Option<String>,
+    #[serde(default)]
+    collected_slots: bool,
+    #[serde(default)]
+    writing_context: Value,
+    expected_skill: Option<String>,
+    expected_intent: String,
+    expected_stage: String,
+    expected_risk: String,
+}
+
+#[test]
+fn python_parity_fixtures_lock_public_routing_contract() {
+    let cases: Vec<PythonParityCase> =
+        serde_json::from_str(include_str!("fixtures/python_parity_cases.json"))
+            .expect("parity fixture is valid JSON");
+    let router = load_router();
+
+    for case in cases {
+        let mut input = RouteInput::new(&case.message).with_collected_slots(case.collected_slots);
+        if let Some(current_skill) = case.current_skill.as_deref() {
+            input = input.with_current_skill(current_skill);
+        }
+        if case.writing_context.is_object() {
+            input = input.with_writing_context(case.writing_context);
+        }
+        let decision = router.route(&input);
+        assert_eq!(decision.target_skill, case.expected_skill, "{}", case.name);
+        assert_eq!(decision.intent, case.expected_intent, "{}", case.name);
+        assert_eq!(
+            decision.stage.as_str(),
+            case.expected_stage,
+            "{}",
+            case.name
+        );
+        assert_eq!(
+            serde_json::to_value(&decision.risk).unwrap(),
+            Value::String(case.expected_risk),
+            "{}",
+            case.name
+        );
+    }
 }
 
 fn temporary_skills_dir() -> PathBuf {
@@ -345,4 +395,20 @@ fn clamps_route_confidence() {
     let decision = load_router().route(&RouteInput::new("/ppt"));
 
     assert!((0.0..=1.0).contains(&decision.confidence));
+}
+
+#[test]
+fn completeness_language_without_a_delivery_request_is_not_ghostwriting() {
+    for message in [
+        "请完整解释这个概念",
+        "帮我完整比较这两个论点的差异",
+        "我想形成一个完整思路",
+    ] {
+        let decision = load_router().route(&RouteInput::new(message));
+        assert_ne!(
+            decision.risk,
+            writing_coach_server::domain::RiskLevel::GhostwritingRisk,
+            "{message}"
+        );
+    }
 }

@@ -45,4 +45,5 @@ legacy_id!(SessionId);
 legacy_id!(RunId);
 legacy_id!(MessageId);
 legacy_id!(DocumentId);
+legacy_id!(DocumentChunkId);
 legacy_id!(SkillEventId);

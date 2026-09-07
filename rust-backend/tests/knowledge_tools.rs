@@ -24,6 +24,7 @@ use tokio::{net::TcpListener, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 use writing_coach_server::{
     corpus::{
+        chunking::chunk_document,
         markdown::{MarkdownKnowledgeTool, search_markdown},
         session_documents::search_session_documents,
     },
@@ -58,6 +59,42 @@ impl KnowledgeTool for PoisonedProviderFailure {
             ),
         })
     }
+}
+
+#[tokio::test]
+async fn session_document_search_returns_only_the_relevant_traceable_chunk() {
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    writing_coach_server::store::sqlite::migrate(&pool)
+        .await
+        .unwrap();
+    let session = SessionRepository::new(pool.clone())
+        .create(Some("student-1"))
+        .await
+        .unwrap();
+    let text = "# 研究背景\n普通的小组合作说明。\n\n# 责任边界\n青铜雨伞假说认为责任边界模糊。";
+    let chunks = chunk_document("访谈记录.md", text);
+    let documents = DocumentRepository::new(pool);
+    let document = documents
+        .add_with_chunks(
+            session.id,
+            "访谈记录.md",
+            "text/markdown",
+            text,
+            None,
+            &chunks,
+        )
+        .await
+        .unwrap();
+
+    let hits = search_session_documents(&documents, session.id, "青铜雨伞 责任边界", 5)
+        .await
+        .unwrap();
+
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].heading, "责任边界");
+    assert!(hits[0].text.contains("青铜雨伞假说"));
+    assert_eq!(hits[0].metadata["document_id"], document.id.to_legacy_hex());
+    assert!(hits[0].metadata["chunk_id"].as_str().is_some());
 }
 
 struct PoisonedHitFailure;

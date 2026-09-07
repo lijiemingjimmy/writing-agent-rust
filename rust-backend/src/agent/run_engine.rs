@@ -520,11 +520,17 @@ fn normalized_cancel_reason(reason: &str) -> String {
     }
 }
 
-fn safe_failure_message(error: &AppError) -> &'static str {
+fn safe_failure_message(error: &AppError) -> String {
     match error {
-        AppError::Model(_) => "model provider request failed",
-        AppError::Pricing(_) => "model usage cost could not be calculated",
-        _ => "agent execution failed",
+        AppError::Model(_) => "model provider request failed".to_owned(),
+        AppError::Pricing(_) => "model usage cost could not be calculated".to_owned(),
+        AppError::ContextCapacityExceeded {
+            estimated_tokens,
+            context_limit,
+        } => format!(
+            "输入内容过长：本轮预计需要约 {estimated_tokens} tokens，超过模型上下文上限 {context_limit} tokens。请缩短本次输入或删除部分会话资料后重试。"
+        ),
+        _ => "agent execution failed".to_owned(),
     }
 }
 
@@ -534,6 +540,7 @@ fn terminal_error_kind(error: &AppError) -> &'static str {
         AppError::CorruptData(_) => "corrupt_data",
         AppError::NotFound(_) => "not_found",
         AppError::InvalidRun(_) => "invalid_run",
+        AppError::ContextCapacityExceeded { .. } => "input_too_long",
         _ => "internal",
     }
 }

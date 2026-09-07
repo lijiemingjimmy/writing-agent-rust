@@ -715,6 +715,10 @@ async fn run_start_context_length_changes_runtime_admission_before_provider_call
 
     assert_eq!(rejected.status, RunStatus::Failed);
     assert_eq!(constrained.gateway.calls(), 0);
+    let error = rejected.error_message.as_deref().unwrap();
+    assert!(error.contains("输入内容过长"));
+    assert!(error.contains("520 tokens"));
+    assert!(error.contains("缩短本次输入或删除部分会话资料"));
 
     let roomy = Harness::new(Arc::new(CallingProgram), FakeGateway::success(1, 1)).await;
     let admitted = roomy
