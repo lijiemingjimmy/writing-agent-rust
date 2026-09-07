@@ -106,13 +106,13 @@ impl PromptBuilder {
         messages.push(untrusted_data_message("Course and Session Evidence", &format_hits(
             "Course and Session Evidence",
             &context.knowledge.hits,
-            |hit| matches!(hit.provider.as_str(), "corpus" | "course_corpus" | "session_document"),
+            |hit| matches!(hit.provider.as_str(), "corpus" | "course_corpus" | "local_corpus" | "session_document"),
             "No relevant course or session evidence was found. Do not attribute claims to course materials.",
         )));
         messages.push(untrusted_data_message("Verified Literature Evidence", &format_hits(
             "Verified Literature Evidence",
             &context.knowledge.hits,
-            |hit| !matches!(hit.provider.as_str(), "corpus" | "course_corpus" | "session_document" | "web" | "searxng" | "bing" | "brave"),
+            |hit| !matches!(hit.provider.as_str(), "corpus" | "course_corpus" | "local_corpus" | "session_document" | "web" | "searxng" | "bing" | "brave"),
             if context.web_enabled {
                 "No verified literature result was returned. Do not invent titles, authors, DOI, or dates."
             } else {
@@ -210,7 +210,7 @@ impl PromptBuilder {
                 |hit| {
                     matches!(
                         hit.provider.as_str(),
-                        "corpus" | "course_corpus" | "session_document"
+                        "corpus" | "course_corpus" | "local_corpus" | "session_document"
                     )
                 },
                 "No relevant course or session evidence was found. Do not attribute claims to course materials or uploaded documents.",

@@ -77,6 +77,7 @@ export function StudentChat() {
   const [stopping, setStopping] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
   const [runPending, setRunPending] = useState(false);
+  const [runDetailsOpen, setRunDetailsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [transferBusy, setTransferBusy] = useState(false);
   const [transferMessage, setTransferMessage] = useState("");
@@ -351,6 +352,7 @@ export function StudentChat() {
   }
 
   function handleComposerKey(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       void submit();
@@ -653,7 +655,6 @@ export function StudentChat() {
       <main className={`student-main ${messages.length ? "has-messages" : "is-empty"}`} aria-hidden={settingsOpen || undefined} inert={settingsOpen || undefined}>
         <nav className="student-run-actions" aria-label="会话工具">
           <button ref={settingsButtonRef} type="button" onClick={() => setSettingsOpen(true)} aria-haspopup="dialog" aria-controls="model-settings-dialog" aria-expanded={settingsOpen}>模型设置</button>
-          <button type="button" onClick={synthesize} disabled={!sessionId || !messages.length || busy}>形成思路</button>
           <button type="button" onClick={() => void handleExport()} disabled={!sessionId || busy}>导出会话</button>
           <label className={busy ? "disabled" : ""}>
             <span>导入 JSON</span>
@@ -681,6 +682,22 @@ export function StudentChat() {
           </details>
         ) : null}
 
+        {runState.status !== "idle" ? (
+          <details className="run-details"
+            open={runDetailsOpen}
+            onToggle={(event) => setRunDetailsOpen(event.currentTarget.open)}
+          >
+            <summary>
+              <span>运行详情</span>
+              <small>{runActive ? "Agent 正在执行" : "可展开查看轨迹、Token 与费用"}</small>
+            </summary>
+            <div className="run-inspector">
+              <AgentProgress state={runState} stopping={stopping} />
+              <UsageSummary state={runState} />
+            </div>
+          </details>
+        ) : null}
+
         {importedRunIds.length ? (
           <label className="imported-run-selector" aria-label="导入运行轨迹">
             <span>导入轨迹</span>
@@ -694,13 +711,6 @@ export function StudentChat() {
               ))}
             </select>
           </label>
-        ) : null}
-
-        {runState.status !== "idle" ? (
-          <div className="run-inspector">
-            <AgentProgress state={runState} stopping={stopping} />
-            <UsageSummary state={runState} />
-          </div>
         ) : null}
 
         {!messages.length && !runActive ? (
@@ -744,6 +754,15 @@ export function StudentChat() {
             ) : (
               <button disabled={busy || !input.trim() || !profileConfirmed} aria-label="发送">↑</button>
             )}
+            <button
+              type="button"
+              className="synthesize-button"
+              onClick={synthesize}
+              disabled={!sessionId || !messages.length || busy}
+              title="根据当前会话形成完整思路"
+            >
+              形成完整思路
+            </button>
           </form>
         </footer>
       </main>

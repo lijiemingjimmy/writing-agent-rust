@@ -25,7 +25,7 @@ use tokio_util::sync::CancellationToken;
 use writing_coach_server::{
     corpus::{
         chunking::chunk_document,
-        markdown::{MarkdownKnowledgeTool, search_markdown},
+        markdown::{LocalCorpusKnowledgeTool, MarkdownKnowledgeTool, search_markdown},
         session_documents::search_session_documents,
     },
     skills::SkillRegistry,
@@ -37,6 +37,67 @@ use writing_coach_server::{
         web::{WebConfig, WebSearch},
     },
 };
+
+#[tokio::test]
+async fn configured_local_corpus_recurses_and_returns_only_relative_source_paths() {
+    let root = temporary_dir("local-corpus");
+    fs::create_dir_all(root.join("课程课件")).unwrap();
+    write(
+        &root.join("课程课件/独特讲义.md"),
+        "# 研究问题\n银色风筝原则要求先区分观察与判断。\n",
+    );
+    write(
+        &root.join("不支持.txt"),
+        "银色风筝原则不应从 TXT 语料读取。\n",
+    );
+    let tool = LocalCorpusKnowledgeTool::new(&root).unwrap();
+
+    let hits = tool
+        .search(
+            SearchRequest::new("银色风筝原则 观察 判断"),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(tool.name(), "local_corpus");
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].provider, "local_corpus");
+    assert_eq!(hits[0].source, "课程课件/独特讲义.md");
+    assert!(!Path::new(&hits[0].source).is_absolute());
+    assert!(hits[0].text.contains("银色风筝原则"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn configured_local_corpus_rejects_a_symlink_that_escapes_its_root() {
+    use std::os::unix::fs::symlink;
+
+    let root = temporary_dir("local-corpus-symlink");
+    let outside = root.parent().unwrap().join(format!(
+        "outside-local-corpus-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    write(&outside, "# 私密材料\n不可越界读取的银色风筝原则。\n");
+    symlink(&outside, root.join("escape.md")).unwrap();
+    let tool = LocalCorpusKnowledgeTool::new(&root).unwrap();
+
+    let error = tool
+        .search(SearchRequest::new("银色风筝原则"), CancellationToken::new())
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "local knowledge search failed: corpus file escapes trusted root"
+    );
+    fs::remove_file(outside).unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
 
 struct PoisonedProviderFailure;
 

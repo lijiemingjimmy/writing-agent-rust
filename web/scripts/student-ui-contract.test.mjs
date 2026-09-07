@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const studentChatPath = new URL("../src/pages/StudentChat.tsx", import.meta.url);
+const studentStylesPath = new URL("../src/styles.css", import.meta.url);
 
 test("keeps the student chat focused on history, conversation, and the composer", async () => {
   const source = await readFile(studentChatPath, "utf8");
@@ -61,12 +62,49 @@ test("offers a bounded text or Markdown upload for the active Rust-backed sessio
 
 test("offers an explicit synthesis action instead of pretending the button is a chat message", async () => {
   const source = await readFile(studentChatPath, "utf8");
+  const composer = source.slice(
+    source.indexOf('<form className="chat-composer"'),
+    source.indexOf("</form>", source.indexOf('<form className="chat-composer"'))
+  );
 
-  assert.match(source, />形成思路</);
+  assert.match(composer, /className="synthesize-button"/);
+  assert.match(composer, />\s*形成完整思路\s*</);
   assert.match(source, /action:\s*"synthesize"/);
   assert.match(source, /disabled=\{!sessionId \|\| !messages\.length \|\| busy\}/);
   assert.match(source, /if \(!options\.action\)/);
   assert.match(source, /metadata_json\.action === "synthesize"/);
+});
+
+test("keeps run details collapsed across message submission and aligned below session documents", async () => {
+  const source = await readFile(studentChatPath, "utf8");
+  const styles = await readFile(studentStylesPath, "utf8");
+
+  assert.match(source, /<details className="run-details"/);
+  assert.match(source, /<summary>\s*<span>运行详情<\/span>/);
+  assert.match(source, /onToggle=.*setRunDetailsOpen/);
+  assert.match(source, /useState\(false\)/);
+  assert.doesNotMatch(source, /setRunDetailsOpen\(true\)/);
+  assert.ok(
+    source.indexOf('<details className="run-details"') < source.indexOf('aria-label="导入运行轨迹"')
+  );
+  assert.match(source, /<AgentProgress state=\{runState\}/);
+  assert.match(source, /<UsageSummary state=\{runState\}/);
+  assert.match(styles, /\.session-documents,\s*\.run-details\s*\{[^}]*width:\s*min\(1080px, calc\(100% - 64px\)\)/s);
+  assert.match(styles, /\.session-documents \+ \.run-details\s*\{\s*margin-top:\s*10px/s);
+  assert.match(styles, /\.run-details > summary\s*\{[^}]*padding:\s*10px 14px[^}]*font-weight:\s*700/s);
+});
+
+test("does not submit while a Chinese input method is confirming composition", async () => {
+  const source = await readFile(studentChatPath, "utf8");
+  const handler = source.slice(
+    source.indexOf("function handleComposerKey"),
+    source.indexOf("function resetRunUi")
+  );
+
+  assert.match(handler, /nativeEvent\.isComposing/);
+  assert.match(handler, /keyCode === 229/);
+  assert.ok(handler.indexOf("nativeEvent.isComposing") < handler.indexOf('event.key === "Enter"'));
+  assert.match(handler, /event\.key === "Enter" && !event\.shiftKey/);
 });
 
 test("bootstraps a student bearer credential and clears it on invalidation or switching", async () => {

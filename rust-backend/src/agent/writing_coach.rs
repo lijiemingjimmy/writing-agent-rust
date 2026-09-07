@@ -7,7 +7,10 @@ use sqlx::SqlitePool;
 use crate::{
     AppError,
     agent::{AgentAnswer, AgentProgram, RunContext, TurnAction, UserTurn},
-    corpus::{markdown::MarkdownKnowledgeTool, session_documents::SessionDocumentKnowledgeTool},
+    corpus::{
+        markdown::{LocalCorpusKnowledgeTool, MarkdownKnowledgeTool},
+        session_documents::SessionDocumentKnowledgeTool,
+    },
     domain::{FlowStage, RiskLevel, RouteDecision, RouteInput, SessionStateData},
     llm::{ModelMessage, ModelRequest},
     skills::{
@@ -47,6 +50,7 @@ pub struct WritingCoachProgram {
     branch_controller: BranchController,
     context_max_chars: usize,
     context_recent_chars: usize,
+    local_corpus_enabled: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -87,12 +91,36 @@ impl WritingCoachProgram {
         context_max_chars: usize,
         context_recent_chars: usize,
     ) -> Self {
-        let local_tools: Vec<Arc<dyn crate::tools::KnowledgeTool>> = vec![
+        Self::new_with_context_limits_and_local_corpus(
+            pool,
+            registry,
+            knowledge,
+            web_enabled,
+            context_max_chars,
+            context_recent_chars,
+            None,
+        )
+    }
+
+    pub fn new_with_context_limits_and_local_corpus(
+        pool: SqlitePool,
+        registry: SkillRegistry,
+        knowledge: Arc<KnowledgeCoordinator>,
+        web_enabled: bool,
+        context_max_chars: usize,
+        context_recent_chars: usize,
+        local_corpus: Option<LocalCorpusKnowledgeTool>,
+    ) -> Self {
+        let local_corpus_enabled = local_corpus.is_some();
+        let mut local_tools: Vec<Arc<dyn crate::tools::KnowledgeTool>> = vec![
             Arc::new(MarkdownKnowledgeTool::new(registry.clone())),
             Arc::new(SessionDocumentKnowledgeTool::new(DocumentRepository::new(
                 pool.clone(),
             ))),
         ];
+        if let Some(local_corpus) = local_corpus {
+            local_tools.push(Arc::new(local_corpus));
+        }
         let knowledge = Arc::new(knowledge.with_additional_tools(local_tools));
         Self {
             sessions: SessionRepository::new(pool.clone()),
@@ -109,6 +137,7 @@ impl WritingCoachProgram {
             branch_controller: BranchController::new(registry.clone()),
             context_max_chars,
             context_recent_chars,
+            local_corpus_enabled,
         }
     }
 
@@ -755,6 +784,7 @@ impl AgentProgram for WritingCoachProgram {
             turn.session_id,
             material_plan.as_ref(),
             &knowledge_decision,
+            self.local_corpus_enabled,
         );
         Self::complete_phase(&context, "decide_knowledge_use").await?;
 
@@ -1157,10 +1187,14 @@ fn knowledge_plan(
     session_id: crate::domain::SessionId,
     material: Option<&crate::skills::MaterialSearchPlan>,
     decision: &KnowledgeDecision,
+    local_corpus_enabled: bool,
 ) -> KnowledgePlan {
     let mut tools = Vec::new();
     if decision.use_course_corpus {
         tools.push("course_corpus");
+        if local_corpus_enabled {
+            tools.push("local_corpus");
+        }
     }
     // Uploaded session evidence can inform every writing task, including Socratic topic
     // exploration. The tool remains session-scoped and returns no hits when no document matches.
@@ -1173,7 +1207,9 @@ fn knowledge_plan(
         .unwrap_or_else(|| extract_year_range(message));
     KnowledgePlan::new(tools.into_iter().map(|tool| {
         let request = match (tool, material) {
-            ("course_corpus", Some(plan)) => SearchRequest::new(&plan.corpus_query),
+            ("course_corpus" | "local_corpus", Some(plan)) => {
+                SearchRequest::new(&plan.corpus_query)
+            }
             ("scholarly", Some(plan)) => SearchRequest::from_terms(plan.query_terms.clone())
                 .with_max_results(plan.max_results),
             ("web", Some(plan)) => SearchRequest::new(&plan.web_query),
@@ -1315,13 +1351,25 @@ fn answer_metadata(
     let used_corpus = knowledge
         .hits
         .iter()
-        .filter(|hit| matches!(hit.provider.as_str(), "corpus" | "course_corpus"))
+        .filter(|hit| {
+            matches!(
+                hit.provider.as_str(),
+                "corpus" | "course_corpus" | "local_corpus"
+            )
+        })
         .map(|hit| hit.source.clone())
         .collect::<BTreeSet<_>>();
     let literature = filtered_sources(&knowledge.hits, |provider| {
         !matches!(
             provider,
-            "corpus" | "course_corpus" | "session_document" | "web" | "searxng" | "bing" | "brave"
+            "corpus"
+                | "course_corpus"
+                | "local_corpus"
+                | "session_document"
+                | "web"
+                | "searxng"
+                | "bing"
+                | "brave"
         )
     });
     let web = filtered_sources(&knowledge.hits, |provider| {

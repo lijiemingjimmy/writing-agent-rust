@@ -73,6 +73,36 @@ fn config_rejects_zero_context_length() {
 }
 
 #[test]
+fn config_accepts_an_optional_local_corpus_root_without_changing_the_default() {
+    let default = AppConfig::from_toml(VALID_TEST_CONFIG).unwrap();
+    assert_eq!(default.local_corpus_root, None);
+
+    let local_root = std::env::temp_dir().join("private-course-corpus");
+    let configured = VALID_TEST_CONFIG.replace(
+        "corpus_root = \"../corpus\"",
+        &format!(
+            "corpus_root = \"../corpus\"\nlocal_corpus_root = {:?}",
+            local_root.to_string_lossy()
+        ),
+    );
+    let parsed = AppConfig::from_toml(&configured).unwrap();
+    assert_eq!(parsed.local_corpus_root.as_deref(), local_root.to_str());
+}
+
+#[test]
+fn config_rejects_a_relative_local_corpus_root() {
+    let configured = VALID_TEST_CONFIG.replace(
+        "corpus_root = \"../corpus\"",
+        "corpus_root = \"../corpus\"\nlocal_corpus_root = \"private-course-corpus\"",
+    );
+    let error = AppConfig::from_toml(&configured).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "invalid configuration: local_corpus_root must be an absolute path"
+    );
+}
+
+#[test]
 fn config_rejects_unknown_knowledge_provider_names() {
     for section in [
         "[knowledge.web]\nproviders = [\"searxng\", \"search_typo\"]",

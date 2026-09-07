@@ -68,6 +68,62 @@ impl KnowledgeTool for MarkdownKnowledgeTool {
 }
 
 #[derive(Clone)]
+pub struct LocalCorpusKnowledgeTool {
+    root: PathBuf,
+}
+
+impl LocalCorpusKnowledgeTool {
+    pub fn new(root: impl AsRef<Path>) -> Result<Self, ToolError> {
+        let root = root
+            .as_ref()
+            .canonicalize()
+            .map_err(|_| ToolError::Local("invalid local corpus root".to_owned()))?;
+        if !root.is_dir() {
+            return Err(ToolError::Local(
+                "local corpus root is not a directory".to_owned(),
+            ));
+        }
+        Ok(Self { root })
+    }
+}
+
+#[async_trait]
+impl KnowledgeTool for LocalCorpusKnowledgeTool {
+    fn name(&self) -> &'static str {
+        "local_corpus"
+    }
+
+    async fn search(
+        &self,
+        request: SearchRequest,
+        cancel: CancellationToken,
+    ) -> Result<Vec<SearchHit>, ToolError> {
+        crate::tools::check_cancel(&cancel)?;
+        let query = request.query_terms.join(" ");
+        let pattern = self.root.join("**/*.md");
+        let mut hits =
+            search_markdown_impl(&query, &[pattern], request.limit_or(5), Some(&self.root))?;
+        for hit in &mut hits {
+            let source = Path::new(&hit.source);
+            let canonical = if source.is_absolute() {
+                source.canonicalize()
+            } else {
+                project_root().join(source).canonicalize()
+            }
+            .map_err(|_| ToolError::Local("could not validate local corpus source".to_owned()))?;
+            hit.source = canonical
+                .strip_prefix(&self.root)
+                .map_err(|_| ToolError::Local("local corpus source escapes root".to_owned()))?
+                .to_string_lossy()
+                .into_owned();
+            hit.provider = "local_corpus".to_owned();
+        }
+        crate::tools::check_cancel(&cancel)?;
+        Ok(hits)
+    }
+}
+
+#[derive(Clone)]
 struct ParsedChunk {
     source: String,
     title: String,

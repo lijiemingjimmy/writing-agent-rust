@@ -2,6 +2,9 @@ bind_addr = "127.0.0.1:3000"
 database_url = "sqlite://rust_course_demo.db"
 skill_root = "skills"
 corpus_root = "corpus"
+# Optional, local-only Markdown corpus. Keep this value in an uncommitted runtime
+# config; search results expose paths relative to this root.
+# local_corpus_root = "ABSOLUTE_PATH_TO_PRIVATE_MARKDOWN_CORPUS"
 # Add the exact student and teacher Web origins when they are hosted cross-origin.
 cors_allowed_origins = ["https://student.example.edu", "https://teacher.example.edu"]
 conversation_context_max_chars = 24000

@@ -1970,7 +1970,7 @@ a {
   width: min(1080px, 100%);
   min-height: 70px;
   padding: 12px 12px 12px 20px;
-  grid-template-columns: minmax(0, 1fr) 68px 44px;
+  grid-template-columns: minmax(0, 1fr) 68px 44px 112px;
   border-color: #dfe3ea;
   border-radius: 22px;
   background: #fff;
@@ -2008,6 +2008,20 @@ a {
   border-color: #aec0ff;
   background: #edf2ff;
   color: #315ce9;
+}
+
+.chat-composer .synthesize-button {
+  width: 112px;
+  border: 1px solid #315ce9;
+  border-radius: 999px;
+  background: #315ce9;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.chat-composer .synthesize-button:hover:not(:disabled) {
+  background: #244bd0;
 }
 
 .student-access-page {
@@ -2075,6 +2089,14 @@ a {
   .student-main.is-empty .composer-wrap {
     width: 100%;
   }
+
+  .chat-composer {
+    grid-template-columns: minmax(0, 1fr) 44px 112px;
+  }
+
+  .chat-composer textarea {
+    grid-column: 1 / -1;
+  }
 }.button-link,.section-heading button,.row-actions button,.quick-questions button{min-height:34px;padding:7px 10px;border:1px solid #dfe3e9;border-radius:7px;background:#fff;color:#353b48;font-size:12px;font-weight:700}
 .backend-ok{display:inline-flex;align-items:center;gap:5px;color:#397355;font-size:12px}.backend-ok:before{content:"";width:7px;height:7px;border-radius:50%;background:#58a678}.settings-list>section{padding:18px;border:1px solid #e3e6eb;border-radius:10px;background:#fff}
 .section-heading{display:flex;align-items:center;justify-content:space-between;gap:14px}.section-heading h2{margin:0}.section-heading>div{display:flex;gap:8px}
@@ -2098,10 +2120,9 @@ a {
   justify-content: flex-end;
 }
 
-.session-documents {
+.session-documents,
+.run-details {
   width: min(1080px, calc(100% - 64px));
-  margin: 72px auto 0;
-  padding: 10px 14px;
   border: 1px solid #e2e6ef;
   border-radius: 12px;
   background: #fafbfe;
@@ -2109,7 +2130,13 @@ a {
   font-size: 12px;
 }
 
-.session-documents summary {
+.session-documents {
+  margin: 72px auto 0;
+  padding: 10px 14px;
+}
+
+.session-documents summary,
+.run-details > summary {
   cursor: pointer;
   color: #343b49;
   font-weight: 700;
@@ -2236,20 +2263,49 @@ a {
   color: var(--text-strong);
 }
 
-.imported-run-selector + .run-inspector {
+.run-details + .imported-run-selector {
   margin-top: 10px;
 }
 
-.run-inspector {
+.run-details {
   flex: 0 0 auto;
-  width: min(800px, calc(100% - 64px));
-  max-height: min(300px, 38vh);
-  margin: 68px auto 0;
+  margin: 10px auto 0;
+}
+
+.session-documents + .run-details {
+  margin-top: 10px;
+}
+
+.run-details > summary {
+  display: list-item;
+  padding: 10px 14px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.run-details > summary::marker {
+  color: var(--primary);
+}
+
+.run-details > summary small {
+  float: right;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.run-details[open] > summary {
+  border-bottom: 1px solid var(--border);
+}
+
+.run-inspector {
+  width: 100%;
+  max-height: min(360px, 44vh);
   overflow: auto;
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) minmax(270px, 0.8fr);
   gap: 12px;
-  padding: 1px 2px 10px;
+  padding: 12px;
   content-visibility: auto;
 }
 
@@ -2605,10 +2661,17 @@ a {
     margin: 8px 18px 0;
   }
 
-  .run-inspector {
+  .run-details {
     width: calc(100% - 36px);
-    max-height: none;
     margin-top: 14px;
+  }
+
+  .run-details > summary small {
+    display: none;
+  }
+
+  .run-inspector {
+    max-height: none;
     grid-template-columns: 1fr;
   }
 

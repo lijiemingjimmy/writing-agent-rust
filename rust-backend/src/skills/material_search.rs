@@ -85,7 +85,12 @@ impl MaterialSearchService {
         let course = knowledge
             .hits
             .iter()
-            .filter(|hit| matches!(hit.provider.as_str(), "corpus" | "course_corpus"))
+            .filter(|hit| {
+                matches!(
+                    hit.provider.as_str(),
+                    "corpus" | "course_corpus" | "local_corpus"
+                )
+            })
             .collect::<Vec<_>>();
         let literature = knowledge
             .hits
@@ -95,6 +100,7 @@ impl MaterialSearchService {
                     hit.provider.as_str(),
                     "corpus"
                         | "course_corpus"
+                        | "local_corpus"
                         | "session_document"
                         | "web"
                         | "searxng"

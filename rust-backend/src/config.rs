@@ -17,6 +17,8 @@ pub struct AppConfig {
     pub skill_root: String,
     pub corpus_root: String,
     #[serde(default)]
+    pub local_corpus_root: Option<String>,
+    #[serde(default)]
     pub cors_allowed_origins: Vec<String>,
     pub model: ModelConfig,
     pub run_defaults: RunDefaults,
@@ -131,7 +133,26 @@ impl AppConfig {
 
         self.validate_cors_origins()?;
         self.validate_knowledge()?;
-        self.validate_security()
+        self.validate_security()?;
+        if self
+            .local_corpus_root
+            .as_deref()
+            .is_some_and(|root| root.trim().is_empty())
+        {
+            return Err(AppError::InvalidConfig(
+                "local_corpus_root must not be empty".to_owned(),
+            ));
+        }
+        if self
+            .local_corpus_root
+            .as_deref()
+            .is_some_and(|root| !Path::new(root).is_absolute())
+        {
+            return Err(AppError::InvalidConfig(
+                "local_corpus_root must be an absolute path".to_owned(),
+            ));
+        }
+        Ok(())
     }
 
     pub fn build_knowledge_coordinator(

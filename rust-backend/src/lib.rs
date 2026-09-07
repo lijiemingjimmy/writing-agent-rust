@@ -44,14 +44,23 @@ pub async fn build_app(config: AppConfig) -> Result<Router, AppError> {
     let registry = skills::SkillRegistry::load(Path::new(&config.skill_root))?;
     let (knowledge, web_enabled) = config.build_knowledge_coordinator()?;
     let knowledge = Arc::new(knowledge);
-    let program = Arc::new(agent::WritingCoachProgram::new_with_context_limits(
-        pool.clone(),
-        registry,
-        knowledge,
-        web_enabled,
-        config.conversation_context_max_chars,
-        config.conversation_context_recent_chars,
-    ));
+    let local_corpus = config
+        .local_corpus_root
+        .as_deref()
+        .map(corpus::markdown::LocalCorpusKnowledgeTool::new)
+        .transpose()
+        .map_err(|_| AppError::InvalidConfig("invalid local corpus root".to_owned()))?;
+    let program = Arc::new(
+        agent::WritingCoachProgram::new_with_context_limits_and_local_corpus(
+            pool.clone(),
+            registry,
+            knowledge,
+            web_enabled,
+            config.conversation_context_max_chars,
+            config.conversation_context_recent_chars,
+            local_corpus,
+        ),
+    );
     let gateway = Arc::new(llm::GenaiModelGateway::new(model_settings.clone()));
     let run_engine = agent::RunEngine::new(pool.clone(), program, gateway, model_settings.clone());
     run_engine.reconcile_orphans().await?;

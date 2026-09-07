@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 use writing_coach_server::{
     agent::{RunEngine, UserTurn, WritingCoachProgram},
     config::ModelConfig,
+    corpus::markdown::LocalCorpusKnowledgeTool,
     domain::{RunId, RunStatus, SessionId, Usage},
     llm::{
         ModelCallSettings, ModelError, ModelGateway, ModelRequest, ModelResponse, ModelRole,
@@ -727,6 +728,90 @@ async fn canonical_program_searches_selected_skill_markdown_and_uploaded_session
     );
 
     fs::remove_dir_all(fixture).unwrap();
+}
+
+#[tokio::test]
+async fn configured_local_corpus_is_course_evidence_only_when_requested() {
+    let local_root = temporary_project();
+    fs::create_dir_all(&local_root).unwrap();
+    fs::write(
+        local_root.join("本地讲义.md"),
+        "# Audience Awareness\n银色风筝原则用于区分研究问题与普通话题。\n",
+    )
+    .unwrap();
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    sqlite::migrate(&pool).await.unwrap();
+    let session_id = SessionRepository::new(pool.clone())
+        .create(Some("student-local-corpus"))
+        .await
+        .unwrap()
+        .id;
+    let registry = SkillRegistry::load(&project_root().join("skills")).unwrap();
+    let local_corpus = LocalCorpusKnowledgeTool::new(&local_root).unwrap();
+    let program = Arc::new(
+        WritingCoachProgram::new_with_context_limits_and_local_corpus(
+            pool.clone(),
+            registry,
+            Arc::new(KnowledgeCoordinator::new(Vec::new())),
+            false,
+            24_000,
+            12_000,
+            Some(local_corpus),
+        ),
+    );
+    let gateway = QueueGateway::new([
+        Ok("课程材料说明研究问题应当聚焦。"),
+        Ok("这轮不需要课程材料。"),
+    ]);
+    let engine = RunEngine::new(
+        pool.clone(),
+        program,
+        Arc::new(gateway.clone()),
+        Arc::new(ModelSettingsStore::new(model_config()).unwrap()),
+    );
+
+    let requested = run_turn(&engine, session_id, "PPT 里的银色风筝原则是什么？").await;
+    assert!(
+        requested.metadata["used_corpus_files"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("本地讲义.md"))
+    );
+    assert!(
+        requested.metadata["grounding_sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|source| source["provider"] == "local_corpus")
+    );
+    assert_eq!(
+        requested.metadata["literature_search"]["results"],
+        json!([])
+    );
+    assert!(
+        gateway.requests()[0]
+            .messages
+            .iter()
+            .any(|message| message.content.contains("银色风筝原则"))
+    );
+
+    gateway.set_knowledge_decision(
+        "{\"use_course_corpus\":false,\"use_external_search\":false,\"query\":\"\",\"reason\":\"无需材料\"}",
+    );
+    let not_requested = run_turn(&engine, session_id, "切换分支：请诊断这份初稿的表达").await;
+    assert!(
+        !not_requested.metadata["grounding_sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|source| source["provider"] == "local_corpus")
+    );
+
+    fs::remove_dir_all(local_root).unwrap();
 }
 
 #[tokio::test]
