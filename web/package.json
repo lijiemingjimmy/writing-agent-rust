@@ -2,7 +2,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5173",
+    "dev:teacher": "vite --host 127.0.0.1 --port 5174",
     "build": "vite build",
+    "build:teacher": "vite build --outDir dist-teacher",
     "preview": "vite preview",
     "test": "node --test scripts/*.test.mjs"
   },

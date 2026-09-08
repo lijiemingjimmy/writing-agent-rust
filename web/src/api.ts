@@ -10,6 +10,7 @@ import { agentApiUrl, normalizeAgentApiBase } from "./api-base.mjs";
 
 const agentApiBase = normalizeAgentApiBase(import.meta.env?.VITE_AGENT_API_BASE_URL || "");
 export const studentAccessStorageKey = "writingCoach.studentAccess";
+export const teacherAccessStorageKey = "writingCoach.teacherAccessToken";
 
 export type StudentAccess = {
   access_token: string;
@@ -604,6 +605,199 @@ export type HistoryMessage = {
   content: string;
   metadata_json: Record<string, unknown>;
 };
+
+export type TeacherStudentProcess = {
+  session_id: string;
+  user_id: string | null;
+  student_name?: string | null;
+  student_id?: string | null;
+  updated_at: string | null;
+  stage: string;
+  intent: string | null;
+  current_skill: string | null;
+  thinking_stage: string | null;
+  thinking_task: string | null;
+  topic: string | null;
+  research_question: string | null;
+  selected_path: string | null;
+  choice_reason: string | null;
+  socratic_rounds: number;
+  pending_questions: string[];
+  pending_question_count: number;
+  next_task: string | null;
+  risk_tags: string[];
+  needs_teacher_confirmation: boolean;
+};
+
+export type TeacherStudentDetail = {
+  session: Record<string, unknown>;
+  process: TeacherStudentProcess;
+  writing_context: Record<string, unknown>;
+  route_history: Array<Record<string, unknown>>;
+  messages: Array<{ role: string; content: string; created_at: string; metadata: Record<string, unknown> }>;
+  skill_events: Array<{ skill_id: string; event_type: string; created_at: string; metadata: Record<string, unknown> }>;
+};
+
+export type ImportQuestionTopic = {
+  id: string;
+  label: string;
+  count: number;
+  session_count: number;
+  keywords: string[];
+  examples: string[];
+};
+
+export type TeacherImportAnalysis = {
+  filename: string;
+  total_records: number;
+  parsed_records: number;
+  analyzed_questions: number;
+  skipped_records: number;
+  skipped_examples: Array<{ index: number; reason: string; query?: string }>;
+  skill_counts: Array<Record<string, unknown>>;
+  stage_counts: Array<Record<string, unknown>>;
+  intent_counts: Array<Record<string, unknown>>;
+  risk_counts: Array<Record<string, unknown>>;
+  question_topics: ImportQuestionTopic[];
+  top_keywords: Array<{ keyword: string; count: number }>;
+  examples_by_skill: Array<Record<string, unknown>>;
+  teaching_followups: string[];
+  items: Array<Record<string, unknown>>;
+  warnings: string[];
+};
+
+export type TeacherStudentSummary = {
+  session_id: string;
+  student: Record<string, unknown>;
+  status: Record<string, unknown>;
+  one_sentence_judgment: string;
+  process: Record<string, unknown>;
+  completed_questions: Array<{ question: string; student_response: string }>;
+  risk_tags: string[];
+  teacher_questions: string[];
+  student_next_tasks: string[];
+  teacher_confirmations: string[];
+  markdown: string;
+};
+
+export type TeacherClassSummary = {
+  usage: Record<string, unknown>;
+  stage_distribution: Array<Record<string, unknown>>;
+  top_stuck_points: Array<Record<string, unknown>>;
+  priority_students: Array<Record<string, unknown>>;
+  teaching_followups: string[];
+  question_topics: ImportQuestionTopic[];
+  markdown: string;
+};
+
+export type TeacherClassInsights = {
+  usage: Record<string, unknown>;
+  stage_distribution: Array<Record<string, unknown>>;
+  skill_counts: Array<Record<string, unknown>>;
+  top_stuck_points: Array<Record<string, unknown>>;
+  priority_students: Array<Record<string, unknown>>;
+  question_topics: ImportQuestionTopic[];
+  top_keywords: Array<{ keyword: string; count: number }>;
+  teaching_followups: string[];
+};
+
+export type TeacherArchiveAnswer = {
+  answer: string;
+  evidence: Array<Record<string, unknown>>;
+  matched_sessions: Array<Record<string, unknown>>;
+  query_terms: string[];
+};
+
+function teacherAuthHeaders(): HeadersInit {
+  if (typeof window === "undefined") return {};
+  const token = window.localStorage.getItem(teacherAccessStorageKey);
+  return token ? { "x-teacher-token": token } : {};
+}
+
+async function teacherJson<T>(path: string, init: RequestInit = {}, fallback = "教师端请求失败"): Promise<T> {
+  const response = await fetch(studentApiUrl(path), init);
+  if (!response.ok) {
+    let message = fallback;
+    try {
+      const payload = await response.json() as { error?: unknown };
+      if (typeof payload.error === "string" && payload.error.length <= 200) message = payload.error;
+    } catch {
+      // Keep a bounded local error instead of exposing an arbitrary response body.
+    }
+    throw new Error(message);
+  }
+  return response.json() as Promise<T>;
+}
+
+export function fetchTeacherStats() {
+  return teacherJson<any>("/api/teacher/stats", { headers: teacherAuthHeaders() }, "无法读取教师统计");
+}
+
+export function fetchTeacherStudents(): Promise<{ students: TeacherStudentProcess[] }> {
+  return teacherJson("/api/teacher/students", { headers: teacherAuthHeaders() }, "无法读取学生列表");
+}
+
+export function fetchTeacherStudentDetail(sessionId: string): Promise<TeacherStudentDetail> {
+  return teacherJson(`/api/teacher/students/${encodeURIComponent(sessionId)}`, { headers: teacherAuthHeaders() }, "无法读取学生详情");
+}
+
+export function fetchTeacherStudentSummary(sessionId: string): Promise<TeacherStudentSummary> {
+  return teacherJson(`/api/teacher/students/${encodeURIComponent(sessionId)}/summary`, { headers: teacherAuthHeaders() }, "无法读取学生摘要");
+}
+
+export function summarizeTeacher(limit = 100) {
+  return teacherJson<any>("/api/teacher/summarize", {
+    method: "POST",
+    headers: { "content-type": "application/json", ...teacherAuthHeaders() },
+    body: JSON.stringify({ limit })
+  }, "无法生成教学复盘");
+}
+
+export function askTeacherArchive(question: string, limit = 200): Promise<TeacherArchiveAnswer> {
+  return teacherJson("/api/teacher/ask", {
+    method: "POST",
+    headers: { "content-type": "application/json", ...teacherAuthHeaders() },
+    body: JSON.stringify({ question, limit })
+  }, "无法检索学生对话库");
+}
+
+export function fetchTeacherClassSummary(): Promise<TeacherClassSummary> {
+  return teacherJson("/api/teacher/class-summary", { headers: teacherAuthHeaders() }, "无法生成班级学情");
+}
+
+export function fetchTeacherClassInsights(): Promise<TeacherClassInsights> {
+  return teacherJson("/api/teacher/class-insights", { headers: teacherAuthHeaders() }, "无法读取班级洞察");
+}
+
+export async function analyzeTeacherJson(file: File): Promise<TeacherImportAnalysis> {
+  const form = new FormData();
+  form.append("file", file);
+  return teacherJson("/api/teacher/analyze-upload", {
+    method: "POST",
+    headers: teacherAuthHeaders(),
+    body: form
+  }, "无法分析导入文件");
+}
+
+export async function deleteTeacherStudentSession(sessionId: string): Promise<void> {
+  const response = await fetch(studentApiUrl(`/api/teacher/students/${encodeURIComponent(sessionId)}`), {
+    method: "DELETE",
+    headers: teacherAuthHeaders()
+  });
+  if (!response.ok) throw new Error("无法删除学生会话");
+}
+
+export async function downloadTeacherExport(format: "csv" | "json") {
+  const path = format === "json" ? "/api/teacher/export.json" : "/api/teacher/export";
+  const response = await fetch(studentApiUrl(path), { headers: teacherAuthHeaders() });
+  if (!response.ok) throw new Error("无法导出教师数据");
+  const blobUrl = URL.createObjectURL(await response.blob());
+  const link = document.createElement("a");
+  link.href = blobUrl;
+  link.download = format === "json" ? "writing-coach-process.json" : "writing-coach-process.csv";
+  link.click();
+  URL.revokeObjectURL(blobUrl);
+}
 
 export async function sendChat(payload: {
   session_id?: string | null;

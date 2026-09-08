@@ -31,10 +31,12 @@ if git -C "$repo_root" remote get-url course >/dev/null 2>&1; then
 fi
 
 for forbidden_path in \
-  app pyproject.toml .venv .github/workflows/deploy-pages.yml \
-  web/src/teacher web/src/pages/TeacherDashboard.tsx web/dist-teacher; do
+  app pyproject.toml .venv .github/workflows/deploy-pages.yml; do
   [ ! -e "$repo_root/$forbidden_path" ] || fail "forbidden path exists: $forbidden_path"
 done
+
+tracked_teacher_build=$(git -C "$repo_root" ls-files 'web/dist-teacher/**' | head -1)
+[ -z "$tracked_teacher_build" ] || fail "generated teacher build artifact is tracked: $tracked_teacher_build"
 
 database_file=$(find "$repo_root" -type f \
   \( -name '*.db' -o -name '*.db-wal' -o -name '*.db-shm' -o -name '*.db-journal' \

@@ -11,19 +11,26 @@ async function exists(url) {
   }
 }
 
-test("the shipped Web application contains no teacher application", async () => {
+test("the shipped Web application contains independent student and teacher entries", async () => {
   const teacherDirectory = new URL("../src/teacher/", import.meta.url);
   const teacherEntry = new URL("../src/pages/TeacherDashboard.tsx", import.meta.url);
+  const studentEntry = new URL("../src/pages/StudentChat.tsx", import.meta.url);
+  const main = await readFile(new URL("../src/main.tsx", import.meta.url), "utf8");
 
-  assert.equal(await exists(teacherDirectory), false, "teacher source directory must not ship");
-  assert.equal(await exists(teacherEntry), false, "teacher entry point must not ship");
+  assert.equal(await exists(teacherDirectory), true, "teacher source directory must ship");
+  assert.equal(await exists(teacherEntry), true, "teacher entry point must ship");
+  assert.equal(await exists(studentEntry), true, "student entry point must remain available");
+  assert.match(main, /path\.startsWith\("\/teacher"\)/);
+  assert.match(main, /<StudentChat/);
 });
 
-test("the shipped package exposes only student development and build commands", async () => {
+test("the package exposes student and teacher development and build commands", async () => {
   const packageJson = JSON.parse(
     await readFile(new URL("../package.json", import.meta.url), "utf8")
   );
 
-  assert.deepEqual(Object.keys(packageJson.scripts).sort(), ["build", "dev", "preview", "test"]);
+  assert.deepEqual(Object.keys(packageJson.scripts).sort(), ["build", "build:teacher", "dev", "dev:teacher", "preview", "test"]);
   assert.equal(packageJson.scripts.build, "vite build");
+  assert.equal(packageJson.scripts["dev:teacher"], "vite --host 127.0.0.1 --port 5174");
+  assert.equal(packageJson.scripts["build:teacher"], "vite build --outDir dist-teacher");
 });

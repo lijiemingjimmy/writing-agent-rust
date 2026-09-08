@@ -780,11 +780,13 @@ impl AgentProgram for WritingCoachProgram {
             skill,
             routing_message,
             &session_document_query,
-            web_enabled,
             turn.session_id,
             material_plan.as_ref(),
             &knowledge_decision,
-            self.local_corpus_enabled,
+            KnowledgeAvailability {
+                web: web_enabled,
+                local_corpus: self.local_corpus_enabled,
+            },
         );
         Self::complete_phase(&context, "decide_knowledge_use").await?;
 
@@ -1179,27 +1181,32 @@ fn record_route(state: &mut SessionStateData, route: &RouteDecision) {
     }
 }
 
+#[derive(Clone, Copy)]
+struct KnowledgeAvailability {
+    web: bool,
+    local_corpus: bool,
+}
+
 fn knowledge_plan(
     skill: &SkillDefinition,
     message: &str,
     session_document_query: &str,
-    web_enabled: bool,
     session_id: crate::domain::SessionId,
     material: Option<&crate::skills::MaterialSearchPlan>,
     decision: &KnowledgeDecision,
-    local_corpus_enabled: bool,
+    available: KnowledgeAvailability,
 ) -> KnowledgePlan {
     let mut tools = Vec::new();
     if decision.use_course_corpus {
         tools.push("course_corpus");
-        if local_corpus_enabled {
+        if available.local_corpus {
             tools.push("local_corpus");
         }
     }
     // Uploaded session evidence can inform every writing task, including Socratic topic
     // exploration. The tool remains session-scoped and returns no hits when no document matches.
     tools.push("session_documents");
-    if decision.use_external_search && web_enabled {
+    if decision.use_external_search && available.web {
         tools.extend(["scholarly", "web"]);
     }
     let years = material

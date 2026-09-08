@@ -45,6 +45,21 @@ npm run dev
 
 打开 `http://127.0.0.1:5173`。开发服务器只把 `/api` 和 `/health` 转发到 Rust 服务。跨域静态构建可设置 `VITE_AGENT_API_BASE_URL` 为绝对 HTTPS 地址。
 
+## 启动教师界面
+
+教师端与学生端共用同一个 React 工程和 Rust API。确认私有运行配置已经设置
+`security.teacher_access_token` 后，可以直接打开
+`http://127.0.0.1:5173/#/teacher`，输入教师访问码。也可以另开终端执行：
+
+```bash
+cd web
+npm run dev:teacher
+```
+
+随后打开 `http://127.0.0.1:5174/#/teacher`。教师端包含总览、学生、对话记录、
+班级洞察、数据导入和设置；独立构建使用 `npm run build:teacher`，产物目录
+`web/dist-teacher/` 已被 Git 忽略。
+
 ## 模型配置
 
 `rust-backend/config.example.toml` 支持配置 Provider、Endpoint、模型名、API Key 环境变量名、上下文长度、最大输出 Token、reasoning mode、价格和默认预算。
@@ -54,7 +69,7 @@ npm run dev
 ## 课程功能
 
 - R1：Rust 主控 Agent 流程
-- R2：React 学生交互界面
+- R2：React 学生端与教师教学工作台
 - R3：自定义模型配置
 - R4：SSE 实时进度与用户取消
 - R5：会话历史、完整轨迹和 JSON 导入导出
