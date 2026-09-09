@@ -1,6 +1,6 @@
 # 当前 Python → Rust 等价矩阵
 
-基准：本机 `writing-coach-agent` 当前实际工作树（检查时 HEAD 为 `71f51dd`）。Python 仓库始终只读；Rust 版本以其产品逻辑和可观察行为作为迁移基准。`rust-backend/tests/fixtures/python_parity_cases.json` 固化高频路由样例，`scripts/check_skill_parity.py` 只读比较 17 个公开 Skill YAML。
+基准：公开的路由与会话行为样例。`rust-backend/tests/fixtures/python_parity_cases.json` 固化高频路由样例，`scripts/check_skill_parity.py` 只读比较 17 个公开 Skill YAML。
 
 ## 会话运行时
 

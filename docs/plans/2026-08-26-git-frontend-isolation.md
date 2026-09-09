@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Never modify, delete, commit, push, or deploy the original `writing-coach-agent` repository.
+- Limit changes to the current repository.
 - Never open the original `writing_coach.db` from the new Rust process.
 - Never copy `.git`, SQLite databases or sidecars, secrets, Python environments, build outputs, student records, or old deployment workflows.
 - Do not push the new repository until all isolation, Rust, Web, and browser checks pass.

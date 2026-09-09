@@ -2,9 +2,9 @@
 
 ## 目标
 
-以 `writing-coach-agent/.worktrees/context-security-integration` 的实际工作树为行为基准：包括 `31f2d5d` 及工作树中尚未提交但已由用户认可的 `domain_boundary.py`、`chat_service.py` 和对应回归测试。项目在原系统基础上使用 Rust 实现同等的学生会话运行时，以及当前学生端和教师端前端实际调用的 HTTP Router。
+使用 Rust 实现学生会话运行时，以及学生端和教师端实际调用的 HTTP Router。验证覆盖领域边界、聊天服务和相关回归场景。
 
-这里的“完整”指学生在一次或多轮对话中可观察到的 Agent 行为完整。实现既延续原项目的产品逻辑与既有资产，也将 Agent 主控、状态管理和服务接口重构为 Rust。
+这里的“完整”指学生在一次或多轮对话中可观察到的 Agent 行为完整。Agent 主控、状态管理和服务接口由 Rust 实现。
 
 ## 保持不变的隔离边界
 

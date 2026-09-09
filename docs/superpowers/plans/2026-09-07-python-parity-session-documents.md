@@ -48,7 +48,7 @@
 - [ ] Run `cargo test --manifest-path rust-backend/Cargo.toml --test skill_router python_parity -- --nocapture`; verify RED on current divergences.
 - [ ] Add the read-only Python exporter and Skill comparator; neither script imports or opens a database.
 - [ ] Synchronize current public Skill YAML from Python and document every intentional corpus-path filter.
-- [ ] Re-run the focused tests and `python3 scripts/check_skill_parity.py --python-root ../writing-coach-agent`; verify GREEN.
+- [ ] Re-run the focused tests and `python3 scripts/check_skill_parity.py --python-root /path/to/reference-runtime`; verify GREEN.
 - [ ] Commit: `test: lock current python routing parity`.
 
 ### Task 2: 文档分块与事务化数据库存储

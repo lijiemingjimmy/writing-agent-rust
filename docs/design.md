@@ -2,20 +2,19 @@
 
 ## Goal
 
-Deliver a self-contained Rust-controlled writing coach Agent without sharing Git metadata, runtime services, databases, deployment workflows, or frontend code with the original Python project.
+Deliver a self-contained Rust-controlled writing coach Agent with its own Git metadata, runtime services, database, deployment workflow, and frontend.
 
 ## Repository boundary
 
 - The repository root is `writing-coach-rust-agent` with its own `.git` directory.
 - The delivery remote is `git@git.tsinghua.edu.cn:rust-course/2026/agent/agent-lijm25.git`; the existing GitHub repository remains an optional public mirror.
-- The original `writing-coach-agent` repository is a read-only source of previously authored assets.
-- No database, SQLite sidecar, API key, absolute local path, Python runtime, GitHub Pages workflow, Mac mini configuration, or original Git history is copied.
+- No database, SQLite sidecar, API key, absolute local path, Python runtime, GitHub Pages workflow, Mac mini configuration, or unrelated Git history is included.
 
 ## Runtime boundary
 
 - Rust owns routing, writing state, retrieval, model orchestration, run progress, cancellation, persistence, token accounting, and budget enforcement.
 - React provides only the student interface and communicates with one Rust API base.
-- A fresh SQLite database is created for the course project. The original `writing_coach.db` is never opened.
+- A fresh SQLite database is created for the course project. Unrelated databases are never opened.
 - The project builds, tests, and runs with Rust and Node.js after the Python service is stopped.
 
 ## Frontend boundary
@@ -33,8 +32,8 @@ Deliver a self-contained Rust-controlled writing coach Agent without sharing Git
 
 ## Acceptance criteria
 
-1. Git common directory belongs to the standalone Rust repository; development worktrees may exist, but none may point to the original Python repository.
+1. Git common directory belongs to the standalone Rust repository; development worktrees may exist, but none may point to another repository.
 2. No tracked file contains an old remote, old deployment target, local absolute path, Python runtime dependency, teacher API route, or original database name.
 3. Rust formatting, Clippy, all Rust tests, all Web tests, and the Web production build pass.
 4. The Rust server starts against a temporary fresh database and the student page renders without a Python process.
-5. The original repository status, HEAD, and database SHA-256 remain unchanged.
+5. Other repositories and databases remain unchanged.

@@ -2,10 +2,11 @@
 
 **写作主体性导师。WAM writes less, so the writer can think more.**
 
-面向《写作与沟通》课程场景的 Rust AI Agent。它不替学生交付成稿，而是通过苏格拉底式追问，把模糊兴趣推进为可论证的问题和学生自己的思维链条。Rust 服务负责 Skill 路由、写作状态推进、长对话记忆、输入安全、课程资料检索、模型调用、实时进度、取消、会话历史以及 Token/费用预算；同时兼容原学生端和教师端实际使用的 API Router。
+面向《写作与沟通》课程场景的 Rust AI Agent。它不替学生交付成稿，而是通过苏格拉底式追问，把模糊兴趣推进为可论证的问题和学生自己的思维链条。Rust 服务负责 Skill 路由、写作状态推进、长对话记忆、输入安全、课程资料检索、模型调用、实时进度、取消、会话历史以及 Token/费用预算；同时提供学生端和教师端使用的 API Router。
 
 - 课程源码仓库：<https://git.tsinghua.edu.cn/rust-course/2026/agent/agent-lijm25>
 - 公开镜像：<https://github.com/lijiemingjimmy/writing-agent-rust>
+- [设计报告（PDF）](docs/report.pdf) · [LaTeX 源码（TeXPage ZIP）](docs/report-source.zip) · [演示视频（MP4）](docs/media/demo.mp4)
 
 > **语料说明：**课程原始语料涉及授权限制，暂未开源，仅保存在作者本地。仓库保留
 > Skill、检索实现和可公开的合成样例；本地演示时可在未提交的运行配置中设置
@@ -18,8 +19,7 @@
 - Node.js 22 或更新版本
 - 一个 OpenAI、DeepSeek 或 OpenAI-compatible 模型 Endpoint
 
-项目在原有写作智能体的产品逻辑和既有资产基础上，以 Rust 重构核心 Agent
-运行时，并提供本课程项目的配置、演示数据与启动方式。
+项目使用 Rust 实现核心 Agent 运行时，并提供配置、演示数据与启动方式。
 
 ## 启动 Rust 服务
 
@@ -84,7 +84,7 @@ npm run dev:teacher
 - “形成思路”把完整可用会话与结构化写作状态交给模型收束为选题定位、核心问题、核心判断、概念路径、文章结构、材料与下一步；模型故障时使用可解释的确定性降级；
 - 问候、明确偏题、真实亲属冒充和停止扮演在模型前走确定性领域边界；
 - 提示词窃取、凭据盗取、暴力/武器和自伤风险在路由及模型调用前由 Rust 确定性分流。
-- Python 当前的 student access、sessions、messages、documents、reports、skills 与 teacher dashboard Router 已由 Rust 原生实现；统计只读取 Rust 新数据库。
+- student access、sessions、messages、documents、reports、skills 与 teacher dashboard Router 由 Rust 原生实现；统计读取本服务数据库。
 
 ### 会话资料如何参与回答
 
@@ -111,8 +111,6 @@ bash scripts/verify-course.sh
 
 该脚本执行仓库隔离检查、Rust fmt/Clippy/tests、Web tests 和生产构建。测试使用临时数据库和本地 Fake/mock，不需要真实用户数据或真实模型调用。
 
-详细 HTTP/SSE 协议见 [`rust-backend/README.md`](rust-backend/README.md)，依赖与复用说明见 [`THIRD_PARTY.md`](THIRD_PARTY.md)，课程诚信与 AI 使用披露见 [`HONOR-CODE`](HONOR-CODE)。
+详细 HTTP/SSE 协议见 [`rust-backend/README.md`](rust-backend/README.md)，依赖说明见 [`THIRD_PARTY.md`](THIRD_PARTY.md)，课程诚信与 AI 使用披露见 [`HONOR-CODE`](HONOR-CODE)。
 
 如需在一台 macOS 主机上常驻运行，可先用 `DRY_RUN=1 scripts/install-launchd.sh ...` 核对所有参数，再显式安装；模板不包含个人机器路径、域名或旧项目配置。`scripts/verify-local-service.sh` 只访问传入的回环 `/health` 地址。
-
-用于生成课程设计 PDF 的完整事实素材、设计逻辑、功能清单、演示方案与交付检查表见 [`submission/GPT_PRO_PDF_BRIEF.md`](submission/GPT_PRO_PDF_BRIEF.md)。其中作者身份、清华 Git、真实 AI Token/费用和最终截图必须由作者按真实记录补充。
