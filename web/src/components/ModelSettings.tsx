@@ -26,9 +26,9 @@ type SettingsForm = {
 };
 
 const emptyForm: SettingsForm = {
-  provider: "",
-  endpoint: "",
-  name: "",
+  provider: "DeepSeek",
+  endpoint: "https://api.deepseek.com",
+  name: "deepseek-v4-flash",
   apiKey: "",
   contextLength: "",
   maxOutputTokens: "",
@@ -47,11 +47,13 @@ export function ModelSettings({ open, onClose }: ModelSettingsProps) {
   const [configuredKey, setConfiguredKey] = useState(false);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [accessCode, setAccessCode] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
   useEffect(() => {
     if (!open) {
+      setAccessCode("");
       setForm((current) => ({ ...current, apiKey: "" }));
       return;
     }
@@ -119,13 +121,13 @@ export function ModelSettings({ open, onClose }: ModelSettingsProps) {
     }
     setSaving(true);
     try {
-      const saved = await updateModelSettings(update);
+      const saved = await updateModelSettings(update, fetch, accessCode);
       setConfiguredKey(saved.apiKeyConfigured);
       setForm(formFromSettings(saved));
       setNotice("设置已保存；新运行将使用这些配置。");
-    } catch {
+    } catch (error) {
       setForm((current) => ({ ...current, apiKey: "" }));
-      setError("设置未保存。请检查 Endpoint、模型名、数值与 reasoning 设置。");
+      setError(error instanceof Error ? error.message : "设置未保存，请检查配置。");
     } finally {
       setSaving(false);
     }
@@ -151,13 +153,19 @@ export function ModelSettings({ open, onClose }: ModelSettingsProps) {
           <button type="button" className="drawer-close" onClick={onClose} aria-label="关闭模型设置" autoFocus>×</button>
         </header>
         <form className="model-settings-form" onSubmit={submit} aria-busy={loading || saving}>
-          <label><span>Provider</span><input value={form.provider} onChange={(event) => updateField("provider", event.target.value)} required /></label>
+          <p className="field-wide model-quick-start">首次使用可直接填入 DeepSeek API Key，其余连接信息已提供默认值。<button type="button" disabled={loading || saving} onClick={() => setForm((current) => ({ ...current, provider: "DeepSeek", endpoint: "https://api.deepseek.com", name: "deepseek-v4-flash", reasoningMode: "high" }))}>使用 DeepSeek 默认配置</button></p>
+          <label><span>Provider</span><input list="model-providers" value={form.provider} onChange={(event) => updateField("provider", event.target.value)} required /><datalist id="model-providers"><option value="DeepSeek" /><option value="OpenAI" /><option value="openai-compatible" /></datalist></label>
           <label className="field-wide"><span>API Endpoint</span><input type="url" value={form.endpoint} onChange={(event) => updateField("endpoint", event.target.value)} required /></label>
           <label><span>Model</span><input value={form.name} onChange={(event) => updateField("name", event.target.value)} required /></label>
           <label>
             <span>临时 API Key</span>
-            <input type="password" value={form.apiKey} onChange={(event) => updateField("apiKey", event.target.value)} autoComplete="new-password" placeholder={configuredKey ? "已配置（留空则不变）" : "可选"} />
+            <input type="password" value={form.apiKey} onChange={(event) => updateField("apiKey", event.target.value)} autoComplete="new-password" placeholder={configuredKey ? "已配置（留空则不变）" : "粘贴你的 API Key"} />
           </label>
+          <label className="field-wide"><span>共享配置访问码（教师访问码）</span>
+            <input type="password" value={accessCode} onChange={(event) => setAccessCode(event.target.value)} autoComplete="off" placeholder="已在教师端登录可留空" />
+          </label>
+          <p className="field-wide">修改共享配置需要服务端设置教师访问码；更换服务地址或 Provider 时，请重新填写 API Key。</p>
+          <details className="field-wide model-advanced-settings"><summary>高级设置：上下文、输出长度与费用预算</summary><div className="model-settings-form">
           <label><span>上下文长度</span><input type="number" min="1" step="1" value={form.contextLength} onChange={(event) => updateField("contextLength", event.target.value)} required /></label>
           <label><span>最大输出 Token</span><input type="number" min="1" step="1" value={form.maxOutputTokens} onChange={(event) => updateField("maxOutputTokens", event.target.value)} required /></label>
           <label><span>Thinking / Reasoning</span><input value={form.reasoningMode} onChange={(event) => updateField("reasoningMode", event.target.value)} required /></label>
@@ -165,7 +173,8 @@ export function ModelSettings({ open, onClose }: ModelSettingsProps) {
           <label><span>输出价格（微美元/百万 Token）</span><input type="number" min="0" step="1" value={form.outputPrice} onChange={(event) => updateField("outputPrice", event.target.value)} required /></label>
           <label><span>新运行默认 Token 预算</span><input type="number" min="1" step="1" value={form.defaultTokenBudget} onChange={(event) => updateField("defaultTokenBudget", event.target.value)} required /></label>
           <label><span>新运行默认费用预算（微美元）</span><input type="number" min="1" step="1" value={form.defaultCostBudgetMicrousd} onChange={(event) => updateField("defaultCostBudgetMicrousd", event.target.value)} required /></label>
-          <p className="server-budget-note field-wide">预算由 Rust 服务端强制执行；保存后仅影响新建运行。</p>
+          <p className="server-budget-note field-wide">预算由 Rust 服务端强制执行；保存后仅影响新建运行。价格为手动估算值，请按模型服务商的实际价格调整。</p>
+          </div></details>
           {error ? <p className="settings-message error" role="alert">{error}</p> : null}
           {notice ? <p className="settings-message success" role="status">{notice}</p> : null}
           <div className="settings-actions field-wide">
@@ -180,7 +189,7 @@ export function ModelSettings({ open, onClose }: ModelSettingsProps) {
 
 function formFromSettings(settings: PublicModelSettings): SettingsForm {
   return {
-    provider: settings.provider,
+    provider: settings.provider.toLowerCase() === "deepseek" ? "DeepSeek" : settings.provider,
     endpoint: settings.endpoint,
     name: settings.name,
     apiKey: "",

@@ -10,12 +10,12 @@
 
 > **语料说明：**课程原始语料涉及授权限制，暂未开源，仅保存在作者本地。仓库保留
 > Skill、检索实现和可公开的合成样例；本地演示时可在未提交的运行配置中设置
-> `local_corpus_root`（绝对目录），只读检索该目录下的 Markdown，界面只显示相对来源路径。
-> 完整课程资料检索。该目录已被 Git 忽略，不影响其余功能的编译、测试和运行。
+> `local_corpus_root`（相对或绝对目录），只读检索该目录下的 Markdown，界面只显示相对来源路径。
+> 默认本地语料目录为 `corpus/local/`，详见下面的“部署自己的语料”。私有文件已被 Git 忽略。
 
 ## 环境
 
-- Rust 1.85 或更新版本（edition 2024）
+- Rust 1.88 或更新版本（edition 2024）
 - Node.js 22 或更新版本
 - 一个 OpenAI、DeepSeek 或 OpenAI-compatible 模型 Endpoint
 
@@ -26,8 +26,10 @@
 从仓库根目录执行：
 
 ```bash
+# 首次部署时复制；已有 config.toml 时不要覆盖。
 cp rust-backend/config.example.toml rust-backend/config.toml
-export WRITING_COACH_MODEL_API_KEY='your-runtime-key'
+# 可选：也可以启动后在界面“模型设置”中填入临时 API Key。
+export WRITING_COACH_MODEL_API_KEY='your-deepseek-api-key'
 cargo run --manifest-path rust-backend/Cargo.toml
 ```
 
@@ -64,7 +66,55 @@ npm run dev:teacher
 
 `rust-backend/config.example.toml` 支持配置 Provider、Endpoint、模型名、API Key 环境变量名、上下文长度、最大输出 Token、reasoning mode、价格和默认预算。
 
-学生界面的模型设置面板也可以更新运行时设置；API Key 不回显、不写入数据库或会话导出。
+默认 Provider 为 `DeepSeek`，Endpoint 为 `https://api.deepseek.com`，Model 为 `deepseek-v4-flash`。学生界面“模型设置”保留这三个值后填入自己的临时 API Key 即可；第三方兼容服务请改成服务商提供的地址和模型名称。“高级设置”可以调整上下文、输出长度、思考强度和预算，价格字段是手动估算值，并非实时官方报价。
+
+界面保存的设置与临时 Key 仅在当前 Rust 进程生效，重启后需重新填写；常驻部署请通过自己的环境变量提供 Key，并把非敏感模型参数写入本地 `config.toml`。API Key 不回显、不写入数据库或会话导出。
+
+教师端“对话记录”中的快捷提问会直接使用这份共用配置调用模型，无需在教师端再次填写 Key。教师端显示配置状态，返回窗口时自动刷新。教学建议基于最多 20 条近期学生提问抽样，每个会话最多 2 条，并显示证据；综合备课问题不要求与学生提问逐字匹配。
+
+## 部署自己的语料
+
+公开仓库包含 Agent 源码、写作 Skills 和少量 `corpus/examples/` 合成样例，**不包含完整课程原始语料**。Skill 描述如何引导写作；语料提供可检索的课程内容，两者可以独立添加。
+
+最方便的方式是把 UTF-8 编码的 `.md` 文件复制到 **`corpus/local/`**。服务启动会自动创建这个目录，允许按课程或章节建立子目录：
+
+```text
+corpus/
+  examples/                 # 仓库自带的公开合成示例
+  local/                    # 你自己的部署语料，内容默认不进 Git
+    课程讲义/
+      选题与问题意识.md
+      证据与论证.md
+    作业要求.md
+```
+
+也可以先复制一个示例体验：
+
+```bash
+mkdir -p corpus/local
+cp corpus/examples/session-document-demo.md corpus/local/
+```
+
+随后在学生端提问与资料相关的课程问题，例如“课程资料中对小组分工的责任边界有什么说明？”。当本轮课程检索命中时，回答下方的“本轮参考了…个资料片段”会显示文件名和标题；无需为每份资料修改 Skill。**新增、修改、删除文件会在下一次检索时生效，无需重启，也不需要向量数据库。**检索是否触发取决于当前问题和写作阶段，不是每一轮都强行引用语料。
+
+已有语料目录不需要复制。修改私有 `rust-backend/config.toml`：
+
+```toml
+local_corpus_root = "/absolute/path/to/your/course-materials"
+# 也支持相对服务启动目录的路径，例如 "my-course/notes"。
+```
+
+省略该项时默认使用 `<corpus_root>/local`。请从仓库根目录启动服务。只有 `.md` 文件参与这套部署语料检索，建议用清晰的 Markdown 标题划分章节；其它格式需先转成 UTF-8 Markdown。目录下的语料对这台服务的所有学生会话可用。界面的“上传资料”则是**当前会话专用**的 TXT/Markdown 附件，不会变成全班共享语料。
+
+默认目录下的私有内容已被 `.gitignore` 排除，公开示例不会被自动复制成你的课程内容。部署到其他机器时请单独复制或挂载自己的语料目录。
+
+## 聊天交互
+
+- 发送消息、打开历史会话时自动定位到最新内容；收到回答时，在底部继续跟随。
+- 向上阅读历史时保留阅读位置，点击“回到最新”可继续跟随。
+- 最后一条提问下方可“修改并重新发送”，支持取消。重新发送会建立一个保留前文与当前附件的新版本，原问题和回答留在历史对话中。
+- 新对话会保存每轮提问前的写作状态，修改时恢复该状态，避免旧回答或摘要污染新版本；升级前的旧会话没有状态快照时，保留前文并重新整理写作状态。
+- 运行中不能修改提问；请先停止或等待完成。旧版本的运行轨迹和费用留在原会话，不重复计入新版本。
 
 ## 课程功能
 
@@ -114,3 +164,11 @@ bash scripts/verify-course.sh
 详细 HTTP/SSE 协议见 [`rust-backend/README.md`](rust-backend/README.md)，依赖说明见 [`THIRD_PARTY.md`](THIRD_PARTY.md)，课程诚信与 AI 使用披露见 [`HONOR-CODE`](HONOR-CODE)。
 
 如需在一台 macOS 主机上常驻运行，可先用 `DRY_RUN=1 scripts/install-launchd.sh ...` 核对所有参数，再显式安装；模板不包含个人机器路径、域名或旧项目配置。`scripts/verify-local-service.sh` 只访问传入的回环 `/health` 地址。
+
+
+### 共享模型配置权限
+
+通过 UI 修改模型设置需要教师访问码。请先在私有配置的 `[security]` 中设置随机的
+`teacher_access_token`，再在模型设置面板输入该访问码。未设置时，UI 不允许修改共享配置，
+仍可通过私有 TOML 和模型 Key 环境变量启动。更换 Endpoint 或 Provider 时必须重新提供 Key，
+防止已有凭据被发送到另一个服务。学生运行、取消与 SSE 都要求 Bearer 身份凭据并校验会话归属。

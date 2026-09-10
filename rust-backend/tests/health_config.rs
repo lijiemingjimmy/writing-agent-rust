@@ -90,15 +90,15 @@ fn config_accepts_an_optional_local_corpus_root_without_changing_the_default() {
 }
 
 #[test]
-fn config_rejects_a_relative_local_corpus_root() {
+fn config_accepts_a_relative_local_corpus_root() {
     let configured = VALID_TEST_CONFIG.replace(
         "corpus_root = \"../corpus\"",
         "corpus_root = \"../corpus\"\nlocal_corpus_root = \"private-course-corpus\"",
     );
-    let error = AppConfig::from_toml(&configured).unwrap_err();
+    let parsed = AppConfig::from_toml(&configured).unwrap();
     assert_eq!(
-        error.to_string(),
-        "invalid configuration: local_corpus_root must be an absolute path"
+        parsed.local_corpus_root.as_deref(),
+        Some("private-course-corpus")
     );
 }
 
@@ -233,4 +233,46 @@ async fn knowledge_defaults_disabled_and_configured_web_provider_executes_throug
     assert_eq!(result.hits.len(), 1);
     assert_eq!(result.hits[0].title, "Configured result");
     server.await.unwrap();
+}
+
+#[tokio::test]
+async fn default_deployment_creates_a_corpus_folder_and_discovers_new_markdown_without_restart() {
+    use tokio_util::sync::CancellationToken;
+    use writing_coach_server::{
+        corpus::markdown::LocalCorpusKnowledgeTool,
+        tools::{KnowledgeTool, SearchRequest},
+    };
+    let root = std::env::temp_dir().join(format!("wam-deploy-corpus-{}", uuid::Uuid::new_v4()));
+    let mut config = AppConfig::from_toml(VALID_TEST_CONFIG).unwrap();
+    config.corpus_root = root.to_string_lossy().into_owned();
+    let _app = writing_coach_server::build_app(config).await.unwrap();
+    let folder = root.join("local");
+    assert!(
+        folder.is_dir(),
+        "a fresh deployment must provide its local corpus directory"
+    );
+    let tool = LocalCorpusKnowledgeTool::new(&folder).unwrap();
+    assert!(
+        tool.search(SearchRequest::new("银色风筝原则"), CancellationToken::new())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    std::fs::create_dir_all(folder.join("课程讲义")).unwrap();
+    let file = folder.join("课程讲义/新材料.md");
+    std::fs::write(&file, "# 银色风筝原则\n银色风筝原则要求区分观察与判断。").unwrap();
+    let hits = tool
+        .search(SearchRequest::new("银色风筝原则"), CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].source, "课程讲义/新材料.md");
+    std::fs::remove_file(file).unwrap();
+    assert!(
+        tool.search(SearchRequest::new("银色风筝原则"), CancellationToken::new())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    std::fs::remove_dir_all(root).unwrap();
 }

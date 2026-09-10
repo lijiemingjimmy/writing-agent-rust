@@ -2,6 +2,7 @@
 name = "writing-coach-server"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
 
 [dependencies]
 async-trait = "0.1"

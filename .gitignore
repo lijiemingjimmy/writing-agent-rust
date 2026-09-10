@@ -18,3 +18,5 @@ writing-coach-session-*.json
 
 # Private course materials are kept locally and are not distributed.
 语料/
+corpus/local/*
+!corpus/local/.gitkeep

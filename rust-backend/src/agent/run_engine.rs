@@ -522,7 +522,16 @@ fn normalized_cancel_reason(reason: &str) -> String {
 
 fn safe_failure_message(error: &AppError) -> String {
     match error {
-        AppError::Model(_) => "model provider request failed".to_owned(),
+        AppError::Model(ModelError::Configuration) => {
+            "模型配置或 Key 未就绪，请检查模型设置及服务端环境变量".to_owned()
+        }
+        AppError::Model(ModelError::Provider) => {
+            "模型请求失败，请检查服务地址和模型配置后重试".to_owned()
+        }
+        AppError::Model(ModelError::InvalidResponse) => {
+            "模型返回格式不完整或缺少 Token 用量，请检查兼容接口".to_owned()
+        }
+        AppError::Model(error) => error.to_string(),
         AppError::Pricing(_) => "model usage cost could not be calculated".to_owned(),
         AppError::ContextCapacityExceeded {
             estimated_tokens,

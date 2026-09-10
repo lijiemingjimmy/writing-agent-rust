@@ -163,6 +163,8 @@ impl fmt::Debug for ModelSettingsStore {
 pub enum ModelSettingsError {
     #[error("model settings are unavailable")]
     Unavailable,
+    #[error("changing endpoint or provider requires a new API key")]
+    EndpointKeyRequired,
     #[error("model provider is not supported")]
     UnsupportedProvider,
     #[error("model endpoint must be a valid absolute HTTP(S) URL")]
@@ -242,8 +244,21 @@ impl ModelSettingsStore {
             .map_err(|_| ModelSettingsError::Unavailable)?;
         let mut candidate = current.clone();
 
+        // A saved credential must never silently follow a newly selected destination.
+        let destination_changed = update.endpoint.as_ref().is_some_and(|endpoint| {
+            normalized_endpoint(endpoint) != normalized_endpoint(&candidate.endpoint)
+        }) || update.provider.as_ref().is_some_and(|provider| {
+            adapter_kind_for_provider(provider) != adapter_kind_for_provider(&candidate.provider)
+        });
+        let has_new_key = update
+            .api_key
+            .as_ref()
+            .is_some_and(|key| !key.trim().is_empty());
         apply_update(&mut candidate, update);
         validate(&candidate)?;
+        if destination_changed && !has_new_key {
+            return Err(ModelSettingsError::EndpointKeyRequired);
+        }
         *current = candidate;
         Ok(())
     }

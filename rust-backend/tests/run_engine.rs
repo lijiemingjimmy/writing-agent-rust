@@ -1014,6 +1014,7 @@ async fn start_time_call_settings_keep_transport_identity_and_prices_coherent() 
         .update(writing_coach_server::llm::ModelSettingsUpdate {
             provider: Some("deepseek".to_owned()),
             name: Some("new-model".to_owned()),
+            api_key: Some("replacement-test-key".to_owned()),
             input_price_microusd_per_million: Some(100_000_000),
             output_price_microusd_per_million: Some(200_000_000),
             ..Default::default()

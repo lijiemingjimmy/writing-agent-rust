@@ -41,9 +41,9 @@ test("opens imported trajectory Runs through a selectable persisted replay inspe
 
   assert.match(source, /imported\.run_ids/);
   assert.match(source, /inspectImportedRun/);
-  assert.match(source, /aria-label="导入运行轨迹"/);
+  assert.match(source, /aria-label="历史运行轨迹"/);
   assert.match(source, /<select/);
-  assert.match(source, /导入轨迹/);
+  assert.match(source, /历史运行轨迹/);
 });
 
 test("offers a bounded text or Markdown upload for the active Rust-backed session", async () => {
@@ -70,8 +70,8 @@ test("offers an explicit synthesis action instead of pretending the button is a 
   assert.match(composer, /className="synthesize-button"/);
   assert.match(composer, />\s*形成完整思路\s*</);
   assert.match(source, /action:\s*"synthesize"/);
-  assert.match(source, /disabled=\{!sessionId \|\| !messages\.length \|\| busy\}/);
-  assert.match(source, /if \(!options\.action\)/);
+  assert.match(source, /disabled=\{!sessionId \|\| !messages\.length \|\| busy \|\| Boolean\(editingMessageId\)\}/);
+  assert.match(source, /if \(!options\.action && !options\.revision\)/);
   assert.match(source, /metadata_json\.action === "synthesize"/);
 });
 
@@ -85,7 +85,7 @@ test("keeps run details collapsed across message submission and aligned below se
   assert.match(source, /useState\(false\)/);
   assert.doesNotMatch(source, /setRunDetailsOpen\(true\)/);
   assert.ok(
-    source.indexOf('<details className="run-details"') < source.indexOf('aria-label="导入运行轨迹"')
+    source.indexOf('<details className="run-details"') < source.indexOf('aria-label="历史运行轨迹"')
   );
   assert.match(source, /<AgentProgress state=\{runState\}/);
   assert.match(source, /<UsageSummary state=\{runState\}/);

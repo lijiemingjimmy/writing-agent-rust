@@ -89,6 +89,19 @@ pub enum ModelError {
     Configuration,
     #[error("model provider request failed")]
     Provider,
+    #[error("API Key 无效或没有模型访问权限，请检查 Key 和服务商")]
+    Unauthorized,
+    #[error("模型或接口不存在，请检查模型名称和 API Endpoint")]
+    NotFound,
+    #[error("模型服务限流或额度不足，请稍后重试并检查余额")]
+    RateLimited,
+    #[error("模型请求参数不被接受，请检查模型名、输出长度和思考模式")]
+    Rejected,
+    #[error("模型服务暂时不可用，请稍后重试")]
+    Unavailable,
+    #[error("模型连接失败或超时，请检查网络和 API Endpoint")]
+    Connection,
+
     #[error("model provider returned an invalid response")]
     InvalidResponse,
 }
@@ -182,7 +195,7 @@ impl ModelGateway for GenaiModelGateway {
             biased;
             _ = cancellation.cancelled() => return Err(ModelError::Cancelled),
             response = client.exec_chat(target, chat_request, Some(&options)) => {
-                response.map_err(|_| ModelError::Provider)?
+                response.map_err(classify_provider_error)?
             }
         };
         let latency_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -276,4 +289,61 @@ fn checked_token_count(count: Option<i32>) -> Result<u64, ModelError> {
     count
         .ok_or(ModelError::InvalidResponse)
         .and_then(|count| u64::try_from(count).map_err(|_| ModelError::InvalidResponse))
+}
+
+fn classify_provider_error(error: genai::Error) -> ModelError {
+    use genai::{Error, webc};
+    // Match structured status codes only. Never forward a provider body, URL or Key.
+    let status = match error {
+        Error::HttpError { status, .. } => Some(status.as_u16()),
+        Error::WebModelCall { webc_error, .. } | Error::WebAdapterCall { webc_error, .. } => {
+            match webc_error {
+                webc::Error::ResponseFailedStatus { status, .. } => Some(status.as_u16()),
+                webc::Error::Reqwest(_) => return ModelError::Connection,
+                _ => return ModelError::InvalidResponse,
+            }
+        }
+        _ => None,
+    };
+    match status {
+        Some(401 | 403) => ModelError::Unauthorized,
+        Some(404) => ModelError::NotFound,
+        Some(429) => ModelError::RateLimited,
+        Some(400 | 422) => ModelError::Rejected,
+        Some(408 | 504) => ModelError::Connection,
+        Some(500..=599) => ModelError::Unavailable,
+        _ => ModelError::Provider,
+    }
+}
+
+#[cfg(test)]
+mod error_tests {
+    use super::*;
+
+    #[test]
+    fn provider_status_is_actionable_without_exposing_response_secrets() {
+        for (status, expected) in [
+            (401, ModelError::Unauthorized),
+            (403, ModelError::Unauthorized),
+            (404, ModelError::NotFound),
+            (429, ModelError::RateLimited),
+            (422, ModelError::Rejected),
+            (504, ModelError::Connection),
+            (503, ModelError::Unavailable),
+            (418, ModelError::Provider),
+        ] {
+            let result = classify_provider_error(genai::Error::HttpError {
+                status: status.try_into().unwrap(),
+                canonical_reason: "sensitive-provider-reason".into(),
+                body: "Bearer sk-test-secret https://private-provider.invalid".into(),
+            });
+            assert_eq!(
+                std::mem::discriminant(&result),
+                std::mem::discriminant(&expected)
+            );
+            assert!(!result.to_string().contains("sk-test-secret"));
+            assert!(!result.to_string().contains("private-provider"));
+            assert!(!result.to_string().contains("sensitive-provider"));
+        }
+    }
 }

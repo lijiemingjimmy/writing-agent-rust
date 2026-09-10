@@ -21,7 +21,7 @@ use crate::{
         parse_json,
     },
     corpus::chunking::chunk_document,
-    domain::{DocumentId, SessionId},
+    domain::{DocumentId, MessageId, SessionId},
     store::access::StudentAccessRepository,
     store::sessions::{
         DocumentRepository, MAX_SESSION_EXPORT_BYTES, MessageRepository, SessionExportV1,
@@ -54,7 +54,9 @@ pub fn router() -> Router<AppState> {
             post(import_session).layer(DefaultBodyLimit::max(MAX_SESSION_EXPORT_BYTES)),
         )
         .route("/{id}", get(get_session))
+        .route("/{id}/runs", get(list_runs))
         .route("/{id}/messages", get(list_messages).post(send_message))
+        .route("/{id}/messages/{message_id}/fork", post(fork_prompt))
         .route("/{id}/report", get(get_report))
         .route(
             "/{id}/documents",
@@ -64,6 +66,37 @@ pub fn router() -> Router<AppState> {
         )
         .route("/{id}/documents/{document_id}", delete(delete_document))
         .route("/{id}/export", get(export_session))
+}
+
+async fn fork_prompt(
+    State(state): State<AppState>,
+    Path((id, message_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let session_id = parse_session_id(&id)?;
+    ensure_owner(&state, &headers, session_id).await?;
+    let message_id =
+        MessageId::parse_legacy(&message_id).map_err(|_| ApiError::invalid_identifier())?;
+    let principal = require_student(&state, &headers).await?;
+    let fork = SessionRepository::new(state.pool.clone())
+        .fork_before_latest_prompt(session_id, message_id, &state.skill_registry)
+        .await?;
+    StudentAccessRepository::with_pepper(
+        state.pool.clone(),
+        state.security.student_token_pepper.clone(),
+    )
+    .bind_session(fork.id, &principal.id)
+    .await?;
+    let messages = MessageRepository::new(state.pool)
+        .list_by_session(fork.id)
+        .await?
+        .into_iter()
+        .map(HistoryMessage::from)
+        .collect::<Vec<_>>();
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({"session_id": fork.id.to_legacy_hex(), "messages": messages})),
+    ))
 }
 
 async fn list_documents(
@@ -480,4 +513,21 @@ fn validate_document_filename(value: &str) -> Result<(&str, &'static str), ApiEr
         return Err(ApiError::bad_request("unsupported document type"));
     };
     Ok((filename, content_type))
+}
+
+async fn list_runs(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let session_id = parse_session_id(&id)?;
+    ensure_owner(&state, &headers, session_id).await?;
+    let ids: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM agent_runs WHERE session_id = ? ORDER BY created_at, rowid",
+    )
+    .bind(session_id.to_legacy_hex())
+    .fetch_all(&state.pool)
+    .await
+    .map_err(crate::AppError::from)?;
+    Ok(Json(json!({"run_ids": ids})))
 }

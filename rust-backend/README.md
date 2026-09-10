@@ -15,9 +15,9 @@ cargo run --manifest-path rust-backend/Cargo.toml
 未设置 `WRITING_COACH_CONFIG` 时读取 `rust-backend/config.toml`。`database_url` 默认指向课程项目自己的新数据库；`skill_root` 和 `corpus_root` 相对进程当前目录解析。
 
 课程原始语料暂未开源，只保存在作者本地。需要本地演示时，在未提交的运行配置中将
-`local_corpus_root` 设置为绝对目录；服务会只读、递归检索其中的 Markdown，并将来源
+`local_corpus_root` 设置为相对或绝对目录；服务会只读、递归检索其中的 Markdown，并将来源
 规范化为相对路径。
-`corpus/` 仅包含可公开的合成测试样例。
+默认自动创建 `<corpus_root>/local/`（根目录启动时为 `corpus/local/`），复制 UTF-8 `.md` 文件进去即可。新增、修改或删除文件在下一次检索生效，支持子目录，无需重启。`corpus/examples/` 仅包含可公开的合成测试样例。
 
 真实 Key 只从 `model.api_key_env` 指定的环境变量或设置 API 的进程内临时值读取，不写入配置、SQLite、日志、SSE 或导出文件。
 
@@ -35,6 +35,7 @@ cargo run --manifest-path rust-backend/Cargo.toml
 | `POST /api/sessions` | 创建空白会话 |
 | `GET /api/sessions/:id` | 读取会话状态 |
 | `GET /api/sessions/:id/messages` | 会话消息 |
+| `POST /api/sessions/:id/messages/:message_id/fork` | 回退至最后一条可见提问之前，创建归当前学生所有的新会话并返回前文；原会话保留 |
 | `POST /api/sessions/:id/messages` | 兼容旧前端的同步消息入口 |
 | `POST /api/sessions/:id/documents` | 上传受限 TXT/Markdown 资料 |
 | `GET /api/sessions/:id/documents` | 列出文件、索引状态与片段数 |
@@ -97,3 +98,10 @@ NO_PROXY=127.0.0.1,localhost,::1 \
 ```
 
 网络边界在测试中使用进程内 Fake 或回环 mock，不读取真实凭据。
+
+### 共享模型配置权限
+
+通过 UI 修改模型设置需要教师访问码。请先在私有配置的 `[security]` 中设置随机的
+`teacher_access_token`，再在模型设置面板输入该访问码。未设置时，UI 不允许修改共享配置，
+仍可通过私有 TOML 和模型 Key 环境变量启动。更换 Endpoint 或 Provider 时必须重新提供 Key，
+防止已有凭据被发送到另一个服务。学生运行、取消与 SSE 都要求 Bearer 身份凭据并校验会话归属。

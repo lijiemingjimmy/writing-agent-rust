@@ -143,16 +143,19 @@ impl AppConfig {
                 "local_corpus_root must not be empty".to_owned(),
             ));
         }
-        if self
+        Ok(())
+    }
+
+    /// Relative paths follow the server working directory, just like skill_root.
+    /// A fresh deployment can copy Markdown into this directory at any time.
+    pub fn prepare_local_corpus_root(&self) -> Result<std::path::PathBuf, AppError> {
+        let root = self
             .local_corpus_root
             .as_deref()
-            .is_some_and(|root| !Path::new(root).is_absolute())
-        {
-            return Err(AppError::InvalidConfig(
-                "local_corpus_root must be an absolute path".to_owned(),
-            ));
-        }
-        Ok(())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| Path::new(&self.corpus_root).join("local"));
+        fs::create_dir_all(&root)?;
+        Ok(root.canonicalize()?)
     }
 
     pub fn build_knowledge_coordinator(

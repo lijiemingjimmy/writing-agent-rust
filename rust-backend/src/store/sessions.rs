@@ -408,6 +408,110 @@ impl SessionRepository {
         Ok(self.import_v1_with_runs(export).await?.session)
     }
 
+    /// Preserve the original session as the audit trail, and continue from the
+    /// context immediately before its latest visible user turn. Snapshot only
+    /// context and documents, so execution-log size cannot prevent revision.
+    pub async fn fork_before_latest_prompt(
+        &self,
+        session_id: SessionId,
+        message_id: MessageId,
+        registry: &crate::skills::SkillRegistry,
+    ) -> Result<Session, AppError> {
+        let mut tx = self.pool.begin().await?;
+        let active: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM agent_runs WHERE session_id = ? AND status IN ('queued', 'running')",
+        ).bind(session_id.to_legacy_hex()).fetch_one(&mut *tx).await?;
+        if active > 0 {
+            return Err(AppError::ActiveRunConflict);
+        }
+        let session = export_session(&mut tx, session_id).await?;
+        let state = export_state(&mut tx, session_id).await?;
+        let messages = export_messages(&mut tx, session_id).await?;
+        let documents = export_documents(&mut tx, session_id).await?;
+        let mut export = SessionExportV1 {
+            schema: SESSION_EXPORT_SCHEMA.to_owned(),
+            version: 1,
+            source_session_id: session_id.to_legacy_hex(),
+            session: TransferSession {
+                id: session_id.to_legacy_hex(),
+                user_id: session.user_id,
+                task_type: session.task_type,
+                stage: session.stage,
+                created_at: None,
+                updated_at: None,
+            },
+            state: TransferState {
+                session_id: session_id.to_legacy_hex(),
+                state_json: state.state_json,
+                updated_at: None,
+            },
+            messages: messages.into_iter().map(TransferMessage::from).collect(),
+            documents: documents.into_iter().map(TransferDocument::from).collect(),
+            skill_events: Vec::new(),
+            runs: Vec::new(),
+            run_events: Vec::new(),
+            model_calls: Vec::new(),
+        };
+        tx.commit().await?;
+        let index = export
+            .messages
+            .iter()
+            .rposition(|message| {
+                message.role == "user"
+                    && message.metadata_json.get("action").and_then(Value::as_str)
+                        != Some("synthesize")
+            })
+            .ok_or_else(|| AppError::InvalidRun("no editable prompt".to_owned()))?;
+        let target = &export.messages[index];
+        if target.id != message_id.to_legacy_hex() {
+            return Err(AppError::InvalidRun(
+                "only the latest prompt can be revised".to_owned(),
+            ));
+        }
+        // Legacy histories have no checkpoint. Keep their prior text, but never
+        // copy derived state/summary that may contain the superseded answer.
+        let mut restored = match target
+            .metadata_json
+            .get("state_before_turn")
+            .filter(|state| state.is_object())
+            .cloned()
+        {
+            Some(checkpoint) => checkpoint,
+            None => super::revisions::restore_legacy_context(&export.messages[..index], registry)?,
+        };
+        if let Some(profile) = export.state.state_json.get("student_profile") {
+            restored["student_profile"] = profile.clone();
+        }
+        restored["revision_origin"] = serde_json::json!({
+            "session_id": session_id.to_legacy_hex(),
+            "message_id": message_id.to_legacy_hex(),
+        });
+        export.session.stage = stage_from_state(&restored).unwrap_or("NEW").to_owned();
+        export.session.task_type = restored
+            .get("task_type")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        export.session.created_at = None;
+        export.session.updated_at = None;
+        export.state.updated_at = None;
+        export.state.state_json = restored;
+        export.messages.truncate(index);
+        // Old runs and their charges remain in the original session. The fork
+        // copies conversational context and attachments, not execution records.
+        export.runs.clear();
+        export.run_events.clear();
+        export.model_calls.clear();
+        export.skill_events.clear();
+        clear_run_references(&mut export.state.state_json);
+        for message in &mut export.messages {
+            clear_run_references(&mut message.metadata_json);
+        }
+        for document in &mut export.documents {
+            clear_run_references(&mut document.metadata_json);
+        }
+        self.import_v1(export).await
+    }
+
     pub async fn import_v1_with_runs(
         &self,
         export: SessionExportV1,
@@ -618,8 +722,12 @@ impl MessageRepository {
     pub async fn update_metadata(
         &self,
         id: MessageId,
-        metadata_json: Value,
+        mut metadata_json: Value,
     ) -> Result<Message, AppError> {
+        let previous = self.get(id).await?;
+        if let Some(checkpoint) = previous.metadata_json.get("state_before_turn") {
+            metadata_json["state_before_turn"] = checkpoint.clone();
+        }
         let metadata = serde_json::to_string(&metadata_json).map_err(|error| {
             AppError::CorruptData(format!("could not serialize message metadata: {error}"))
         })?;
@@ -1636,6 +1744,19 @@ fn event_is_terminal(kind: &str) -> bool {
         kind,
         "run.completed" | "run.failed" | "run.cancelled" | "run.budget_exceeded"
     )
+}
+
+fn clear_run_references(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            object.retain(|key, _| !is_run_reference_key(key));
+            for child in object.values_mut() {
+                clear_run_references(child);
+            }
+        }
+        Value::Array(values) => values.iter_mut().for_each(clear_run_references),
+        _ => {}
+    }
 }
 
 fn rewrite_run_references(value: &mut Value, run_ids: &HashMap<String, String>) {

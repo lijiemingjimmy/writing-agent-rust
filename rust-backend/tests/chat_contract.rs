@@ -1293,7 +1293,7 @@ async fn provider_failure_fails_run_without_persisting_assistant_message() {
     assert_eq!(failed[0].payload["step"], "call_model");
     assert_eq!(
         failed[0].payload["message"],
-        "model provider request failed"
+        "模型请求失败，请检查服务地址和模型配置后重试"
     );
     assert!(
         result

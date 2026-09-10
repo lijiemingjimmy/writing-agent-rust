@@ -1,3 +1,4 @@
+import { AuthenticatedEventSource } from "./authenticated-sse.ts";
 import {
   buildRunEventsUrl,
   isTerminalRunEvent,
@@ -221,7 +222,7 @@ export function subscribeRunEvents(
   options: RunEventOptions = {}
 ): RunEventSubscription {
   const makeEventSource = options.eventSourceFactory
-    ?? ((url: string) => new EventSource(url) as EventSourceLike);
+    ?? ((url: string) => new AuthenticatedEventSource(url, studentFetch));
   const schedule = options.setTimer ?? ((callback, delay) => window.setTimeout(callback, delay));
   const unschedule = options.clearTimer ?? ((token) => window.clearTimeout(token as number));
   const initialBackoff = Math.max(100, options.initialBackoffMs ?? 500);
@@ -346,12 +347,13 @@ export async function fetchModelSettings(): Promise<PublicModelSettings> {
 
 export async function updateModelSettings(
   update: ModelSettingsUpdate,
-  fetcher: Fetcher = fetch
+  fetcher: Fetcher = fetch,
+  accessCode?: string
 ): Promise<PublicModelSettings> {
   validateModelSettingsUpdate(update);
   const value = await requestJson<unknown>(studentApiUrl("/api/settings/model"), {
     method: "PUT",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...teacherAuthHeaders(), ...(accessCode ? { "x-teacher-token": accessCode } : {}) },
     body: JSON.stringify(update)
   }, "模型设置未保存", fetcher);
   return normalizePublicSettings(value);
@@ -830,4 +832,23 @@ export async function fetchSessionMessages(
   const response = await studentFetch(studentApiUrl(`/api/sessions/${sessionId}/messages`));
   if (!response.ok) throw new Error(await response.text());
   return response.json();
+}
+
+export async function forkBeforePrompt(
+  sessionId: string,
+  messageId: string
+): Promise<{ session_id: string; messages: HistoryMessage[] }> {
+  const response = await studentFetch(studentApiUrl(
+    `/api/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/fork`
+  ), { method: "POST" });
+  if (!response.ok) {
+    throw new Error(response.status === 409
+      ? "这段对话仍在生成，请停止或等待完成后再修改。"
+      : "无法回退这一轮，请重新打开对话后重试。原对话已保留。");
+  }
+  return response.json();
+}
+
+export async function fetchSessionRuns(sessionId: string): Promise<{ run_ids: string[] }> {
+  return requestJson(studentApiUrl(`/api/sessions/${encodeURIComponent(sessionId)}/runs`), {}, "无法读取历史运行轨迹");
 }

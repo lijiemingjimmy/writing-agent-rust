@@ -197,7 +197,8 @@ impl AgentProgram for WritingCoachProgram {
         let web_enabled = web.enabled();
         Self::start_phase(&context, "accept_input").await?;
         let persisted = self.sessions.load_state(turn.session_id).await?;
-        let mut state = SessionStateData::from_legacy_json(persisted.state_json)?;
+        let state_before_turn = persisted.state_json;
+        let mut state = SessionStateData::from_legacy_json(state_before_turn.clone())?;
         let recent_messages = self.messages.list_by_session(turn.session_id).await?;
         let user_message = self
             .messages
@@ -206,7 +207,7 @@ impl AgentProgram for WritingCoachProgram {
                 "user",
                 turn.content.trim(),
                 Some(
-                    json!({"run_id": context.run_id().to_legacy_hex(), "intent": "skill_message"}),
+                    json!({"run_id": context.run_id().to_legacy_hex(), "intent": "skill_message", "state_before_turn": state_before_turn}),
                 ),
             )
             .await?;

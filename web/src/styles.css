@@ -2705,3 +2705,29 @@ a {
     grid-template-columns: 1fr;
   }
 }
+
+/* The conversation has its own scroll viewport, including small screens. */
+.chat-thread { overflow-anchor: none; }
+.chat-thread-content { display: flex; flex-direction: column; gap: 24px; flex: 0 0 auto; }
+.chat-message { flex-shrink: 0; }
+.composer-wrap { position: relative; flex-shrink: 0; }
+.scroll-to-latest { position: absolute; left: 50%; top: -42px; transform: translateX(-50%); padding: 8px 16px; border: 1px solid var(--border); border-radius: 999px; background: #fff; color: var(--accent-strong); box-shadow: 0 3px 12px #20242c12; cursor: pointer; white-space: nowrap; }
+.edit-prompt-button { padding: 4px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; }
+.edit-prompt-button:hover { background: var(--accent-soft); color: var(--accent-strong); }
+.prompt-editor { width: min(760px, 100%); display: flex; flex-direction: column; gap: 10px; padding: 16px; border: 1px solid #c7d0ff; border-radius: 16px; background: #f8f9ff; }
+.prompt-editor label { font-weight: 600; font-size: 14px; }
+.prompt-editor textarea { box-sizing: border-box; width: 100%; min-height: 120px; max-height: 40vh; resize: vertical; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: #fff; font: inherit; line-height: 1.6; }
+.prompt-editor p { margin: 0; color: var(--muted); font-size: 12px; }
+.prompt-editor-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.prompt-editor-actions button { padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: #fff; cursor: pointer; }
+.prompt-editor-actions button[type=submit] { color: #fff; background: var(--accent); border-color: var(--accent); }
+.prompt-editor-actions button:disabled { opacity: .5; cursor: default; }
+@media (max-width: 760px) {
+  .student-shell { height: 100dvh; min-height: 0; grid-template-rows: auto minmax(0, 1fr); }
+  .student-main.has-messages { height: 100%; min-height: 0; }
+}
+.model-quick-start { margin: 0; padding: 12px; background: #f6f8ff; border-radius: 10px; color: var(--muted); font-size: 13px; line-height: 1.7; }
+.model-quick-start button { display: block; margin-top: 8px; padding: 6px 10px; background: #fff; border: 1px solid var(--border); border-radius: 6px; color: var(--accent-strong); cursor: pointer; }
+.model-advanced-settings { border-top: 1px solid var(--border); padding-top: 16px; }
+.model-advanced-settings > summary { cursor: pointer; font-size: 14px; color: var(--muted); }
+.model-advanced-settings > div { margin-top: 18px; }

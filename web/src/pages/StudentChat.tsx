@@ -11,8 +11,10 @@ import {
   downloadSessionExport,
   exportSession,
   fetchSessionMessages,
+  fetchSessionRuns,
   fetchSessionDocuments,
   fetchSessions,
+  forkBeforePrompt,
   getRun,
   hasStudentAccess,
   importSession,
@@ -38,6 +40,7 @@ import {
   type RunClientState
 } from "../run-state.ts";
 import { normalizeStudentProfile, parseStudentProfile } from "../student-profile.mjs";
+import { useChatScroll } from "../useChatScroll";
 
 type Message = {
   id: string;
@@ -65,6 +68,8 @@ export function StudentChat() {
   const [loadingSession, setLoadingSession] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editText, setEditText] = useState("");
   const [webSearchEnabled, setWebSearchEnabled] = useState(false);
   const [studentName, setStudentName] = useState(savedAccessValid ? savedProfile?.name || "" : "");
   const [studentId, setStudentId] = useState(initialStudentId);
@@ -87,6 +92,7 @@ export function StudentChat() {
   const [documentError, setDocumentError] = useState("");
   const [documents, setDocuments] = useState<SessionDocument[]>([]);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const editFormRef = useRef<HTMLFormElement | null>(null);
   const settingsButtonRef = useRef<HTMLButtonElement | null>(null);
   const importRef = useRef<HTMLInputElement | null>(null);
   const documentRef = useRef<HTMLInputElement | null>(null);
@@ -98,6 +104,12 @@ export function StudentChat() {
 
   const runActive = runState.status === "queued" || runState.status === "running";
   const busy = restoring || loadingSession || runActive || runPending || finalizing || transferBusy || documentBusy || inspectingImportedRun;
+  const chatScroll = useChatScroll(sessionId, messages.length ? messages : null, runState.status);
+  const latestPrompt = messages.findLast((message) => message.role === "user");
+
+  useEffect(() => {
+    if (editingMessageId) editFormRef.current?.scrollIntoView({ block: "nearest" });
+  }, [editingMessageId]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -138,7 +150,7 @@ export function StudentChat() {
       ? fetchSessionMessages(savedSessionId)
       : Promise.resolve({ messages: [] as HistoryMessage[] });
     void Promise.allSettled([sessionsRequest, messagesRequest])
-      .then(([sessionsResult, messagesResult]) => {
+      .then(async ([sessionsResult, messagesResult]) => {
         if (!active || generation !== runGenerationRef.current) return;
         const restoration = resolveStartupRestoration(
           sessionsResult,
@@ -154,12 +166,21 @@ export function StudentChat() {
           setSessionId(savedSessionId);
           setMessages(historyMessages(restoration.messages));
           void loadDocumentsForSession(savedSessionId);
+          try {
+            const runs = await fetchSessionRuns(savedSessionId);
+            if (!active || generation !== runGenerationRef.current) return;
+            setImportedRunIds(runs.run_ids);
+            const latest = runs.run_ids.at(-1);
+            if (latest) await inspectImportedRun(latest);
+          } catch {
+            if (active) setTransferError("消息已恢复，但历史运行轨迹加载失败，请重新打开会话。");
+          }
         } else if (savedSessionId && restoration.rememberedFailed) {
           window.localStorage.removeItem(activeSessionStorageKey(initialStudentId));
         }
       })
       .finally(() => {
-        if (active && generation === runGenerationRef.current) {
+        if (active) {
           setLoadingHistory(false);
           setRestoring(false);
         }
@@ -198,9 +219,10 @@ export function StudentChat() {
     }
   }
 
-  async function submit(text = input, options: { action?: "synthesize" } = {}) {
+  async function submit(text = input, options: { action?: "synthesize"; revision?: string } = {}) {
     const trimmed = text.trim();
     if (!trimmed || runInFlightRef.current || restoring || loadingSession || transferBusy || documentBusy) return;
+    if (editingMessageId && !options.revision) return;
     const profile = currentProfile();
     if (!profile) return;
 
@@ -217,7 +239,8 @@ export function StudentChat() {
     setStopping(false);
     setFinalizing(false);
     setTransferError("");
-    if (!options.action) {
+    chatScroll.scrollToLatest();
+    if (!options.action && !options.revision) {
       setInput("");
       setMessages((current) => [
         ...current,
@@ -225,9 +248,25 @@ export function StudentChat() {
       ]);
     }
 
+    let targetSessionId = sessionId;
+    let revisionPrepared = false;
     try {
+      if (options.revision && sessionId) {
+        const fork = await forkBeforePrompt(sessionId, options.revision);
+        if (!mountedRef.current || generation !== runGenerationRef.current) return;
+        targetSessionId = fork.session_id;
+        revisionPrepared = true;
+        setSessionId(fork.session_id);
+        window.localStorage.setItem(activeSessionStorageKey(profile.studentId), fork.session_id);
+        setMessages([...historyMessages(fork.messages),
+          { id: `client-user-${generation}`, role: "user", content: trimmed }]);
+        setEditingMessageId(null);
+        setEditText("");
+        setTransferMessage("已从修改处重新开始，原版本保留在历史对话中。");
+        void loadDocumentsForSession(fork.session_id);
+      }
       const created = await createRun({
-        session_id: sessionId,
+        session_id: targetSessionId,
         user_id: profile.studentId,
         student_id: profile.studentId,
         student_name: profile.name,
@@ -258,10 +297,16 @@ export function StudentChat() {
       }).catch(() => {
         // SSE remains the lifecycle authority when an initial snapshot cannot be read.
       });
-    } catch {
+    } catch (error) {
       if (!mountedRef.current || generation !== runGenerationRef.current) return;
       runInFlightRef.current = false;
       setRunPending(false);
+      if (options.revision && !revisionPrepared) {
+        setRunState(freshRunState());
+        setTransferError(error instanceof Error ? error.message : "修改未发送，原对话已保留。");
+        return;
+      }
+      setInput((current) => current || trimmed);
       setRunState({
         ...freshRunState(),
         status: "failed",
@@ -272,7 +317,7 @@ export function StudentChat() {
         ...current,
         { id: `client-error-${generation}`, role: "assistant", content: "请求失败：无法创建运行任务。" }
       ]);
-      requestAnimationFrame(() => composerRef.current?.focus());
+      requestAnimationFrame(() => composerRef.current?.focus({ preventScroll: true }));
     }
   }
 
@@ -324,7 +369,7 @@ export function StudentChat() {
         setRunPending(false);
         setStopping(false);
         setFinalizing(false);
-        requestAnimationFrame(() => composerRef.current?.focus());
+        requestAnimationFrame(() => composerRef.current?.focus({ preventScroll: true }));
       }
     }
   }
@@ -360,6 +405,8 @@ export function StudentChat() {
   }
 
   function resetRunUi() {
+    setEditingMessageId(null);
+    setEditText("");
     runGenerationRef.current += 1;
     runInFlightRef.current = false;
     setRunPending(false);
@@ -387,14 +434,17 @@ export function StudentChat() {
     try {
       const snapshot = await getRun(nextRunId);
       if (!mountedRef.current || generation !== runGenerationRef.current) return;
-      if (!isTerminalRunStatus(snapshot.status)) {
-        throw new Error("导入轨迹包含非终态运行，无法只读回放。");
-      }
-      setRunState(beginPersistedRunInspection(snapshot));
+      runInFlightRef.current = !isTerminalRunStatus(snapshot.status);
+      setRunState(isTerminalRunStatus(snapshot.status) ? beginPersistedRunInspection(snapshot) : reduceRunSnapshot(freshRunState(), snapshot));
       subscriptionRef.current = subscribeRunEvents(nextRunId, {
         onEvent: (event) => {
           if (!mountedRef.current || generation !== runGenerationRef.current) return;
           setRunState((current) => reduceRunEvent(current, event));
+        },
+        onTerminal: (event) => {
+          if (!isTerminalRunStatus(snapshot.status) && mountedRef.current && generation === runGenerationRef.current) {
+            void finalizeRun(nextRunId, snapshot.session_id, currentProfile(false)?.studentId ?? "", generation, event);
+          }
         },
         onError: (message) => {
           if (mountedRef.current && generation === runGenerationRef.current) setTransferError(message);
@@ -403,7 +453,7 @@ export function StudentChat() {
     } catch (error) {
       if (mountedRef.current && generation === runGenerationRef.current) {
         setRunState(freshRunState());
-        setTransferError(error instanceof Error ? error.message : "导入运行轨迹加载失败。");
+        setTransferError(error instanceof Error ? error.message : "历史运行轨迹加载失败。");
       }
     } finally {
       if (mountedRef.current && generation === runGenerationRef.current) {
@@ -424,7 +474,7 @@ export function StudentChat() {
     setWebSearchEnabled(false);
     setTransferMessage("");
     setTransferError("");
-    requestAnimationFrame(() => composerRef.current?.focus());
+    requestAnimationFrame(() => composerRef.current?.focus({ preventScroll: true }));
   }
 
   async function openSession(nextSessionId: string) {
@@ -432,14 +482,18 @@ export function StudentChat() {
     setLoadingSession(true);
     setTransferError("");
     try {
-      const [response, documentResponse] = await Promise.all([
+      const [response, documentResponse, runsResponse] = await Promise.all([
         fetchSessionMessages(nextSessionId),
-        fetchSessionDocuments(nextSessionId)
+        fetchSessionDocuments(nextSessionId),
+        fetchSessionRuns(nextSessionId)
       ]);
       resetRunUi();
       setSessionId(nextSessionId);
       setMessages(historyMessages(response.messages));
       setDocuments(documentResponse.documents);
+      setImportedRunIds(runsResponse.run_ids);
+      const latestRun = runsResponse.run_ids.at(-1);
+      if (latestRun) await inspectImportedRun(latestRun);
       const profile = currentProfile(false);
       if (profile) window.localStorage.setItem(activeSessionStorageKey(profile.studentId), nextSessionId);
       setInput("");
@@ -451,7 +505,7 @@ export function StudentChat() {
       setTransferError("加载历史会话失败。");
     } finally {
       setLoadingSession(false);
-      requestAnimationFrame(() => composerRef.current?.focus());
+      requestAnimationFrame(() => composerRef.current?.focus({ preventScroll: true }));
     }
   }
 
@@ -563,7 +617,7 @@ export function StudentChat() {
       setProfileConfirmed(true);
       setProfileError("");
       void loadHistory(profile.studentId);
-      requestAnimationFrame(() => composerRef.current?.focus());
+      requestAnimationFrame(() => composerRef.current?.focus({ preventScroll: true }));
     } catch (error) {
       clearStudentAccess();
       setProfileError(error instanceof Error ? error.message : "无法确认学生身份。");
@@ -699,8 +753,8 @@ export function StudentChat() {
         ) : null}
 
         {importedRunIds.length ? (
-          <label className="imported-run-selector" aria-label="导入运行轨迹">
-            <span>导入轨迹</span>
+          <label className="imported-run-selector" aria-label="历史运行轨迹">
+            <span>历史运行轨迹</span>
             <select
               value={runId || importedRunIds.at(-1)}
               disabled={busy}
@@ -718,13 +772,35 @@ export function StudentChat() {
         ) : null}
 
         {messages.length ? (
-          <section className="chat-thread" aria-label="聊天记录">
+          <section className="chat-thread" aria-label="聊天记录" ref={chatScroll.threadRef} onScroll={chatScroll.onScroll}>
+            <div className="chat-thread-content" ref={chatScroll.contentRef}>
             {messages.map((message) => (
               <article key={message.id} className={`chat-message ${message.role}`}>
                 <div className="avatar" aria-hidden="true">{message.role === "assistant" ? "教" : "我"}</div>
-                <div className="message-stack"><div className="bubble">
+                <div className="message-stack">{editingMessageId === message.id ? (
+                  <form className="prompt-editor" ref={editFormRef} onSubmit={(event) => {
+                    event.preventDefault();
+                    void submit(editText, { revision: message.id });
+                  }}>
+                    <label htmlFor="revised-prompt">修改上一轮提问</label>
+                    <textarea id="revised-prompt" value={editText} onChange={(event) => setEditText(event.target.value)} rows={5} autoFocus disabled={busy} />
+                    <p>将从这一轮重新生成回答，原版本会保留在历史对话中。</p>
+                    <div className="prompt-editor-actions">
+                      <button type="button" disabled={busy} onClick={() => setEditingMessageId(null)}>取消修改</button>
+                      <button type="submit" disabled={busy || !editText.trim()}>{busy ? "正在重新发送…" : "保存并重新发送"}</button>
+                    </div>
+                  </form>
+                ) : <div className="bubble">
                   {message.role === "assistant" ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown> : message.content}
-                </div>{message.role === "assistant" ? <MessageSources metadata={message.metadata_json} /> : null}</div>
+                </div>}
+                {message.id === latestPrompt?.id && /^[a-f0-9]{32}$/i.test(message.id) && editingMessageId !== message.id ? (
+                  <button className="edit-prompt-button" type="button" disabled={busy} onClick={() => {
+                    setEditingMessageId(message.id);
+                    setEditText(message.content);
+                    setTransferError("");
+                  }}>修改并重新发送</button>
+                ) : null}
+                {message.role === "assistant" ? <MessageSources metadata={message.metadata_json} /> : null}</div>
               </article>
             ))}
             {runActive ? (
@@ -733,10 +809,12 @@ export function StudentChat() {
                 <div className="message-stack"><div className="bubble typing" role="status" aria-live="polite"><span /><span /><span /></div></div>
               </article>
             ) : null}
+            </div>
           </section>
         ) : null}
 
         <footer className="composer-wrap">
+          {chatScroll.showLatest ? <button className="scroll-to-latest" type="button" onClick={chatScroll.scrollToLatest}>↓ 回到最新</button> : null}
           <form className="chat-composer" onSubmit={submitForm}>
             <textarea
               ref={composerRef}
@@ -745,20 +823,20 @@ export function StudentChat() {
               onKeyDown={handleComposerKey}
               placeholder="我是写作与沟通智能体，可以帮助你选题、检索资料、课程答疑以及训练评价。"
               aria-label="输入消息"
-              disabled={!profileConfirmed}
+              disabled={!profileConfirmed || Boolean(editingMessageId)}
               rows={1}
             />
             <button type="button" className={`web-search-toggle ${webSearchEnabled ? "active" : ""}`} onClick={() => setWebSearchEnabled((value) => !value)} disabled={busy} aria-pressed={webSearchEnabled} title={webSearchEnabled ? "关闭联网检索" : "开启联网检索"}>联网</button>
             {runActive ? (
               <button type="button" className="stop-run-button" onClick={() => void stopRun()} disabled={!runId || stopping} aria-label="停止当前运行">{stopping ? "…" : "■"}</button>
             ) : (
-              <button disabled={busy || !input.trim() || !profileConfirmed} aria-label="发送">↑</button>
+              <button disabled={busy || !input.trim() || !profileConfirmed || Boolean(editingMessageId)} aria-label="发送">↑</button>
             )}
             <button
               type="button"
               className="synthesize-button"
               onClick={synthesize}
-              disabled={!sessionId || !messages.length || busy}
+              disabled={!sessionId || !messages.length || busy || Boolean(editingMessageId)}
               title="根据当前会话形成完整思路"
             >
               形成完整思路
@@ -808,15 +886,15 @@ function historyMessages(messages: HistoryMessage[]): Message[] {
 function MessageSources({ metadata }: { metadata?: Record<string, unknown> }) {
   const sources = Array.isArray(metadata?.grounding_sources)
     ? metadata.grounding_sources.filter((source): source is Record<string, unknown> => (
-      Boolean(source) && typeof source === "object" && (source as Record<string, unknown>).provider === "session_document"
+      Boolean(source) && typeof source === "object" && ["session_document", "local_corpus", "course_corpus", "corpus"].includes(String((source as Record<string, unknown>).provider))
     ))
     : [];
   if (!sources.length) return null;
   return (
     <details className="message-sources">
-      <summary>本轮参考了 {sources.length} 个会话资料片段</summary>
+      <summary>本轮参考了 {sources.length} 个资料片段</summary>
       <ul>{sources.map((source, index) => (
-        <li key={`${String(source.source)}-${index}`}><strong>{String(source.source || "会话资料")}</strong>{source.heading ? ` · ${String(source.heading)}` : ""}</li>
+        <li key={`${String(source.source)}-${index}`}><strong>{String(source.source || "课程资料")}</strong>{source.heading ? ` · ${String(source.heading)}` : ""}</li>
       ))}</ul>
     </details>
   );

@@ -2,9 +2,11 @@ bind_addr = "127.0.0.1:3000"
 database_url = "sqlite://rust_course_demo.db"
 skill_root = "skills"
 corpus_root = "corpus"
-# Optional, local-only Markdown corpus. Keep this value in an uncommitted runtime
-# config; search results expose paths relative to this root.
-# local_corpus_root = "ABSOLUTE_PATH_TO_PRIVATE_MARKDOWN_CORPUS"
+# Drop UTF-8 .md files here, including subfolders. The server creates the folder
+# automatically; additions/edits/removals are picked up on the next search.
+# Relative paths are resolved from the server working directory.
+# Default when omitted: <corpus_root>/local. Absolute paths are supported too.
+local_corpus_root = "corpus/local"
 # Add the exact student and teacher Web origins when they are hosted cross-origin.
 cors_allowed_origins = ["https://student.example.edu", "https://teacher.example.edu"]
 conversation_context_max_chars = 24000
@@ -17,13 +19,14 @@ conversation_context_recent_chars = 12000
 student_token_pepper = "replace-with-a-random-runtime-secret"
 
 [model]
-provider = "openai-compatible"
-endpoint = "http://127.0.0.1:1234/v1"
-name = "local-writing-model"
+provider = "deepseek"
+endpoint = "https://api.deepseek.com"
+name = "deepseek-v4-flash"
 api_key_env = "WRITING_COACH_MODEL_API_KEY"
 context_length = 32768
 max_output_tokens = 4096
-reasoning_mode = "medium"
+reasoning_mode = "high"
+# These are editable estimates, not live provider prices.
 input_price_microusd_per_million = 500000
 output_price_microusd_per_million = 1500000
 

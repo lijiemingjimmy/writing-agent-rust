@@ -20,7 +20,7 @@ use crate::{
     agent::{RunSubscription, SessionPreparation, UserTurn},
     api::{
         ApiError,
-        auth::{optional_student, require_student},
+        auth::require_student,
         dto::{ChatResponse, CreateRunResponse, ResponseMode, RunRequest, RunResponse},
         parse_json, parse_optional_json,
     },
@@ -56,29 +56,17 @@ async fn create_run(
 ) -> Result<(StatusCode, Json<CreateRunResponse>), ApiError> {
     let mut request = parse_json(payload)?;
     let requested_session = request.session_id.clone();
-    let principal = optional_student(&state, &headers).await?;
-    if let Some(principal) = &principal {
-        request.user_id = Some(principal.student_id.clone());
-        request.student_id = Some(principal.student_id.clone());
-        request.student_name = Some(principal.student_name.clone());
-        if let Some(session_id) = requested_session.as_deref() {
-            let session_id =
-                SessionId::parse_legacy(session_id).map_err(|_| ApiError::invalid_identifier())?;
-            if !StudentAccessRepository::with_pepper(
-                state.pool.clone(),
-                state.security.student_token_pepper.clone(),
-            )
-            .owns_session(session_id, &principal.id)
-            .await?
-            {
-                return Err(ApiError::forbidden("session is not owned by this student"));
-            }
-        }
+    let principal = require_student(&state, &headers).await?;
+    request.user_id = Some(principal.student_id.clone());
+    request.student_id = Some(principal.student_id.clone());
+    request.student_name = Some(principal.student_name.clone());
+    if let Some(session_id) = requested_session.as_deref() {
+        let session_id =
+            SessionId::parse_legacy(session_id).map_err(|_| ApiError::invalid_identifier())?;
+        ensure_session_owner(&state, &headers, session_id).await?;
     }
     let handle = start_run(&state, request).await?;
-    if requested_session.is_none()
-        && let Some(principal) = &principal
-    {
+    if requested_session.is_none() {
         StudentAccessRepository::with_pepper(
             state.pool.clone(),
             state.security.student_token_pepper.clone(),
@@ -98,17 +86,23 @@ async fn create_run(
 async fn get_run(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    headers: HeaderMap,
 ) -> Result<Json<RunResponse>, ApiError> {
     let run_id = parse_run_id(&id)?;
+    let run = state.run_engine.get(run_id).await?;
+    ensure_session_owner(&state, &headers, run.session_id).await?;
     Ok(Json(state.run_engine.get(run_id).await?.into()))
 }
 
 async fn cancel_run(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    headers: HeaderMap,
     payload: Result<Option<Json<CancelRequest>>, JsonRejection>,
 ) -> Result<Json<RunResponse>, ApiError> {
     let run_id = parse_run_id(&id)?;
+    let run = state.run_engine.get(run_id).await?;
+    ensure_session_owner(&state, &headers, run.session_id).await?;
     let reason = parse_optional_json(payload)?
         .and_then(|request| request.reason)
         .unwrap_or_else(|| "user_requested".to_owned());
@@ -123,6 +117,8 @@ async fn run_events(
     headers: HeaderMap,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
     let run_id = parse_run_id(&id)?;
+    let run = state.run_engine.get(run_id).await?;
+    ensure_session_owner(&state, &headers, run.session_id).await?;
     let after_query = query.after_seq.as_deref().and_then(parse_cursor);
     let after_header = headers
         .get("last-event-id")
@@ -458,4 +454,22 @@ fn parse_cursor(value: &str) -> Option<u64> {
         .then(|| value.parse::<u64>().ok())
         .flatten()
         .filter(|value| *value <= MAX_CURSOR)
+}
+
+async fn ensure_session_owner(
+    state: &AppState,
+    headers: &HeaderMap,
+    session_id: SessionId,
+) -> Result<(), ApiError> {
+    let principal = require_student(state, headers).await?;
+    if !StudentAccessRepository::with_pepper(
+        state.pool.clone(),
+        state.security.student_token_pepper.clone(),
+    )
+    .owns_session(session_id, &principal.id)
+    .await?
+    {
+        return Err(ApiError::forbidden("无权访问此会话的运行记录"));
+    }
+    Ok(())
 }

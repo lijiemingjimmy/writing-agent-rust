@@ -136,10 +136,14 @@ impl ControlledHarness {
             pool,
             run_engine: engine.clone(),
             model_settings: settings,
-            security: Arc::new(SecurityConfig::default()),
+            security: Arc::new(SecurityConfig {
+                teacher_access_token: Some("teacher-secret".to_owned()),
+                ..Default::default()
+            }),
+            skill_registry: Default::default(),
         };
         Self {
-            app: writing_coach_server::api::router(state),
+            app: authenticated_fixture(writing_coach_server::api::router(state)).await,
             engine,
             entered,
             release,
@@ -271,6 +275,12 @@ max_cost_microusd = 5000000
 
     async fn json(&self, method: Method, uri: &str, payload: Value) -> (StatusCode, Value) {
         let mut headers = HeaderMap::new();
+        if uri == "/api/settings/model" {
+            headers.insert(
+                "x-teacher-token",
+                HeaderValue::from_static("teacher-secret"),
+            );
+        }
         headers.insert(
             header::AUTHORIZATION,
             HeaderValue::from_str(&format!("Bearer {}", self.student_token)).unwrap(),
@@ -341,7 +351,11 @@ max_cost_microusd = 5000000
         created
     }
 
-    async fn sse(&self, uri: &str, headers: HeaderMap) -> Vec<SseEvent> {
+    async fn sse(&self, uri: &str, mut headers: HeaderMap) -> Vec<SseEvent> {
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {}", self.student_token)).unwrap(),
+        );
         let (status, response_headers, body) =
             self.request(Method::GET, uri, headers, Body::empty()).await;
         assert_eq!(status, StatusCode::OK);
@@ -923,6 +937,10 @@ async fn json_request_rejections_are_fixed_safe_json_across_task_ten_routes() {
     ] {
         let mut headers = HeaderMap::new();
         headers.insert(
+            "x-teacher-token",
+            HeaderValue::from_static("teacher-secret"),
+        );
+        headers.insert(
             header::CONTENT_TYPE,
             HeaderValue::from_static("application/json"),
         );
@@ -1163,7 +1181,7 @@ async fn run_reservation_rolls_back_new_sessions_and_existing_identity_on_reject
         .unwrap();
     let user_id: Option<String> = sqlx::Row::try_get(&row, "user_id").unwrap();
     let state: String = sqlx::Row::try_get(&row, "state_json").unwrap();
-    assert_eq!(user_id.as_deref(), Some("original-id"));
+    assert_eq!(user_id.as_deref(), Some("controlled"));
     assert!(!state.contains("must-not-stick"));
     assert!(!state.contains("不应写入"));
 
@@ -1799,12 +1817,14 @@ async fn lagged_sse_reload_database_failure_terminates_without_delivering_a_high
         Arc::new(GenaiModelGateway::new(settings.clone())),
         settings.clone(),
     );
-    let app = writing_coach_server::api::router(AppState {
+    let app = authenticated_fixture(writing_coach_server::api::router(AppState {
         pool: pool.clone(),
         run_engine: engine,
         model_settings: settings,
         security: Arc::new(SecurityConfig::default()),
-    });
+        skill_registry: Default::default(),
+    }))
+    .await;
     let (_, created) = request_json(
         app.clone(),
         Method::POST,
@@ -2108,4 +2128,133 @@ fn test_run_defaults() -> RunDefaults {
         max_output_tokens: 4_096,
         max_cost_microusd: 5_000_000,
     }
+}
+
+// Timing tests predate authentication. Supply a real test principal at the fixture boundary.
+// Authorization regression tests use Harness directly and never pass through this layer.
+async fn authenticated_fixture(app: Router) -> Router {
+    let (_, access) = request_json(
+        app.clone(),
+        Method::POST,
+        "/api/student/access/bootstrap",
+        json!({"student_name":"controlled", "student_id":"controlled"}),
+    )
+    .await;
+    let token = access["access_token"].as_str().unwrap().to_owned();
+    app.layer(axum::middleware::from_fn(
+        move |mut request: axum::extract::Request, next: axum::middleware::Next| {
+            let token = token.clone();
+            async move {
+                request.headers_mut().insert(
+                    header::AUTHORIZATION,
+                    HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+                );
+                request.headers_mut().insert(
+                    "x-teacher-token",
+                    HeaderValue::from_static("teacher-secret"),
+                );
+                next.run(request).await
+            }
+        },
+    ))
+}
+
+#[tokio::test]
+async fn run_routes_require_owner_even_when_credentials_are_omitted() {
+    let app = Harness::new().await;
+    let created = app.create_completed_run().await;
+    let sid = created["session_id"].as_str().unwrap();
+    let rid = created["run_id"].as_str().unwrap();
+    let (_, second) = app
+        .anonymous_json(
+            Method::POST,
+            "/api/student/access/bootstrap",
+            json!({"student_name":"other", "student_id":"other"}),
+        )
+        .await;
+    let other = second["access_token"].as_str().unwrap();
+    for path in [
+        format!("/api/runs/{rid}"),
+        format!("/api/runs/{rid}/events"),
+        format!("/api/sessions/{sid}/runs"),
+    ] {
+        assert_eq!(
+            app.anonymous_get_json(&path).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            request_json_authenticated(app.app.clone(), Method::GET, &path, Value::Null, other)
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+    }
+    for (path, payload) in [
+        (
+            "/api/runs".to_owned(),
+            json!({"session_id":sid, "message":"foreign"}),
+        ),
+        (format!("/api/runs/{rid}/cancel"), json!({})),
+    ] {
+        assert_eq!(
+            app.anonymous_json(Method::POST, &path, payload.clone())
+                .await
+                .0,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            request_json_authenticated(app.app.clone(), Method::POST, &path, payload, other)
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+    }
+    let (status, runs) = app.get_json(&format!("/api/sessions/{sid}/runs")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(runs["run_ids"], json!([rid]));
+}
+
+#[tokio::test]
+async fn shared_settings_cannot_be_changed_by_anonymous_or_student_callers() {
+    let app = Harness::new().await;
+    let update = json!({"endpoint":"http://127.0.0.1:19999/v1", "api_key":"dummy-replacement"});
+    assert_eq!(
+        app.anonymous_json(Method::PUT, "/api/settings/model", update.clone())
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        request_json_authenticated(
+            app.app.clone(),
+            Method::PUT,
+            "/api/settings/model",
+            update,
+            &app.student_token
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    // Even an administrator must explicitly supply a credential for a new destination.
+    assert_eq!(
+        app.json(
+            Method::PUT,
+            "/api/settings/model",
+            json!({"endpoint":"http://127.0.0.1:19999/v1"})
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        app.json(
+            Method::PUT,
+            "/api/settings/model",
+            json!({"endpoint":"http://127.0.0.1:19999/v1", "api_key":"dummy-replacement"})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
 }

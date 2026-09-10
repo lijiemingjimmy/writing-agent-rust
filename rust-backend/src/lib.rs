@@ -28,6 +28,7 @@ pub struct AppState {
     pub run_engine: agent::RunEngine,
     pub model_settings: Arc<llm::ModelSettingsStore>,
     pub security: Arc<config::SecurityConfig>,
+    pub skill_registry: skills::SkillRegistry,
 }
 
 pub async fn build_app(config: AppConfig) -> Result<Router, AppError> {
@@ -44,16 +45,14 @@ pub async fn build_app(config: AppConfig) -> Result<Router, AppError> {
     let registry = skills::SkillRegistry::load(Path::new(&config.skill_root))?;
     let (knowledge, web_enabled) = config.build_knowledge_coordinator()?;
     let knowledge = Arc::new(knowledge);
-    let local_corpus = config
-        .local_corpus_root
-        .as_deref()
-        .map(corpus::markdown::LocalCorpusKnowledgeTool::new)
-        .transpose()
-        .map_err(|_| AppError::InvalidConfig("invalid local corpus root".to_owned()))?;
+    let local_corpus = Some(
+        corpus::markdown::LocalCorpusKnowledgeTool::new(config.prepare_local_corpus_root()?)
+            .map_err(|_| AppError::InvalidConfig("invalid local corpus root".to_owned()))?,
+    );
     let program = Arc::new(
         agent::WritingCoachProgram::new_with_context_limits_and_local_corpus(
             pool.clone(),
-            registry,
+            registry.clone(),
             knowledge,
             web_enabled,
             config.conversation_context_max_chars,
@@ -69,6 +68,7 @@ pub async fn build_app(config: AppConfig) -> Result<Router, AppError> {
         run_engine,
         model_settings,
         security: Arc::new(config.security.clone()),
+        skill_registry: registry,
     };
 
     let app = api::router(state).route("/health", get(api::health::health));
